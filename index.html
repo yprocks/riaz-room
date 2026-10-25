@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Riyaz Live Tuner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tiro+Devanagari+Hindi&family=Mukta:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Live swar tuner: big current-swar readout + cents needle on top, scrolling pitch trail with loudness below. Same teak/ivory/brass look as Riyaz Room. */
+:root {
+  --teak: #1d1512; --teak-2: #2a1f1a; --teak-3: #3a2b23; --ivory: #efe6d4; --ivory-shade: #d9cdb6;
+  --brass: #c9a24a; --brass-soft: #8a6f33; --fg: #f1e9dc; --muted: #b5a696; --line: #4a382d;
+  --good: #7fbf6a; --bad: #e07a5f;
+  --font-display: "Tiro Devanagari Hindi", "Noto Serif Devanagari", Georgia, serif;
+  --font-body: "Mukta", "Noto Sans Devanagari", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--teak); color: var(--fg); font-family: var(--font-body); font-size: 16px; line-height: 1.45; }
+.wrap { max-width: 44rem; margin-inline: auto; padding-block: max(16px, env(safe-area-inset-top, 0px)) 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: 16px; }
+h1 { font-family: var(--font-display); font-weight: 400; font-size: 1.8rem; margin: 0; }
+h1 .dev { color: var(--brass); }
+.lede { color: var(--muted); margin: 2px 0 0; font-size: .95rem; }
+.panel { background: var(--teak-2); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.label { font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+select, button { font: inherit; color: inherit; }
+select { background: var(--teak-3); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.btn { background: var(--teak-3); border: 1px solid var(--line); border-radius: 999px; padding: 10px 18px; cursor: pointer; }
+.btn.primary { background: var(--brass); color: #120d0b; border-color: var(--brass); font-weight: 500; }
+.btn[aria-pressed=true] { background: var(--brass); color: #120d0b; border-color: var(--brass); }
+:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.readout { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; align-items: center; }
+.swar { font-family: var(--font-display); font-size: 4.2rem; line-height: 1; min-height: 4.2rem; }
+.swar .ro { font-family: var(--font-mono); font-size: 1rem; color: var(--muted); margin-left: 8px; }
+.cents { font-family: var(--font-mono); font-size: 1.6rem; text-align: right; font-variant-numeric: tabular-nums; }
+.cents.good { color: var(--good); } .cents.warn { color: var(--brass); } .cents.bad { color: var(--bad); }
+.sub { grid-column: 1 / -1; color: var(--muted); font-family: var(--font-mono); font-size: .85rem; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.needle { position: relative; height: 34px; border-radius: 8px; background: var(--teak-3); overflow: hidden; }
+.needle .zone25 { position: absolute; top: 0; bottom: 0; left: 25%; width: 50%; background: rgba(201,162,74,.14); }
+.needle .zone10 { position: absolute; top: 0; bottom: 0; left: 40%; width: 20%; background: rgba(127,191,106,.22); }
+.needle .mid { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; background: var(--ivory-shade); opacity: .6; }
+.needle .pin { position: absolute; top: 4px; bottom: 4px; width: 6px; margin-left: -3px; border-radius: 3px; background: var(--fg); left: 50%; transition: left .06s linear; }
+.needle .lab { position: absolute; bottom: 2px; font-family: var(--font-mono); font-size: .62rem; color: var(--muted); }
+canvas { display: block; width: 100%; height: 260px; border-radius: 8px; background: var(--teak-3); }
+.note { color: var(--muted); font-size: .85rem; margin: 0; }
+.err { color: var(--bad); }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr)); gap: 10px; }
+.fact { background: var(--teak-3); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+.fact .v { font-family: var(--font-display); font-size: 1.25rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="dev">सुर</span> Riyaz Live Tuner</h1>
+    <p class="lede">Sing or speak and see the swar you're landing on, live. Nothing is recorded or saved; sound never leaves your phone.</p>
+  </header>
+
+  <section class="panel">
+    <div class="row">
+      <div class="field"><label class="label" for="sa">Your Sa</label><select id="sa"></select></div>
+      <div class="field"><label class="label" for="oct">Octave</label>
+        <select id="oct"><option value="-1">Low</option><option value="0" selected>Middle (most men)</option><option value="1">High (most women)</option></select></div>
+      <button class="btn primary" id="mic" type="button">Start listening</button>
+    </div>
+    <p class="note" id="status">Tap Start listening and allow the microphone.</p>
+  </section>
+
+  <section class="panel" aria-live="off">
+    <div class="readout">
+      <div class="swar" id="swar">—</div>
+      <div class="cents" id="cents"></div>
+      <div class="sub"><span id="hz">— Hz</span><span id="west"></span></div>
+    </div>
+    <div class="needle" aria-hidden="true">
+      <div class="zone25"></div><div class="zone10"></div><div class="mid"></div>
+      <span class="lab" style="left:4px">−50 flat</span><span class="lab" style="right:4px">sharp +50</span>
+      <div class="pin" id="pin"></div>
+    </div>
+    <canvas id="trail" aria-label="Your pitch over the last 8 seconds against the swar lines, loudness underneath"></canvas>
+    <div class="facts">
+      <div class="fact"><div class="label">Centre of your voice (last 10 s)</div><div class="v" id="centre">—</div></div>
+      <div class="fact"><div class="label">Held note</div><div class="v" id="held">—</div></div>
+    </div>
+    <p class="note">Green band = within 10 cents, gold = within 25. The pale line under the trail is your loudness: on the volume ladder the trail should stay flat while it rises and falls.</p>
+  </section>
+
+  <section class="panel">
+    <div class="row">
+      <span class="label">Drone (use headphones, or the tuner hears it)</span>
+    </div>
+    <div class="row">
+      <button class="btn" data-drone="sa" aria-pressed="false" type="button">Sa</button>
+      <button class="btn" data-drone="sapa" aria-pressed="false" type="button">Sa + low Pa</button>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const KEYS = [['C','Safed 1'],['C#','Kali 1'],['D','Safed 2'],['D#','Kali 2'],['E','Safed 3'],['F','Safed 4'],['F#','Kali 3'],['G','Safed 5'],['G#','Kali 4'],['A','Safed 6'],['A#','Kali 5'],['B','Safed 7']];
+  const W = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const SW = [['सा','S','Sa'],['रे॒','r','komal Re'],['रे','R','Re'],['ग॒','g','komal Ga'],['ग','G','Ga'],['म','m','Ma'],['म॑','M','tivra Ma'],['प','P','Pa'],['ध॒','d','komal Dha'],['ध','D','Dha'],['नि॒','n','komal Ni'],['नि','N','Ni']];
+  const JI = [0,112,204,316,386,498,590,702,814,884,996,1088];
+  const st = { sa: 6, oct: 0 };
+  try { const s = JSON.parse(localStorage.getItem('riyaz-tuner') || 'null'); if (s) Object.assign(st, s); } catch (e) {}
+  const saSel = document.getElementById('sa'), octSel = document.getElementById('oct');
+  KEYS.forEach(([w, h], i) => { const o = document.createElement('option'); o.value = i; o.textContent = h + ' · ' + w; saSel.appendChild(o); });
+  saSel.value = st.sa; octSel.value = st.oct;
+  const save = () => { try { localStorage.setItem('riyaz-tuner', JSON.stringify(st)); } catch (e) {} };
+  saSel.onchange = () => { st.sa = +saSel.value; save(); if (droneMode) startDrone(droneMode); };
+  octSel.onchange = () => { st.oct = +octSel.value; save(); if (droneMode) startDrone(droneMode); };
+  const saCents = () => (48 + st.sa + 12 * st.oct) * 100;          // MIDI*100 (C3 = 4800)
+  const centsOf = (f) => 1200 * Math.log2(f / 440) + 6900;
+  const hzOf = (c) => 440 * Math.pow(2, (c - 6900) / 1200);
+  function swarOf(rel) {
+    const k = Math.round(rel / 100), oct = Math.floor(k / 12), idx = ((k % 12) + 12) % 12;
+    const et = oct * 1200 + idx * 100, ji = oct * 1200 + JI[idx], lo = Math.min(et, ji), hi = Math.max(et, ji);
+    const err = rel < lo ? rel - lo : rel > hi ? rel - hi : 0;
+    const mark = oct < 0 ? '.'.repeat(-oct) : "'".repeat(Math.max(0, oct));
+    return { dv: SW[idx][0], ro: oct < 0 ? mark + SW[idx][1] : SW[idx][1] + mark, name: SW[idx][2] + (oct < 0 ? ' (low)' : oct > 0 ? ' (high)' : ''), err, dev: rel - et, idx };
+  }
+
+  // ---------- audio ----------
+  let ctx = null, stream = null, an = null, buf = null, running = false;
+  const status = (t, bad) => { const el = document.getElementById('status'); el.textContent = t; el.className = 'note' + (bad ? ' err' : ''); };
+  async function start() {
+    if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      status('This page needs to be opened from an https:// address (or on a computer as a file) for the microphone to work.', true); return;
+    }
+    try {
+      ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+      await ctx.resume();
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      const src = ctx.createMediaStreamSource(stream);
+      an = ctx.createAnalyser(); an.fftSize = 4096; src.connect(an);
+      buf = new Float32Array(an.fftSize);
+      running = true; document.getElementById('mic').textContent = 'Stop listening';
+      status('Listening. Sing or speak; hold a note to see it settle.');
+      loop();
+    } catch (e) {
+      status('Microphone not available: ' + (e && e.name === 'NotAllowedError' ? 'permission was refused. Allow the microphone for this page in your browser settings.' : (e && e.message || e)), true);
+    }
+  }
+  function stop() {
+    running = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null;
+    document.getElementById('mic').textContent = 'Start listening'; status('Stopped. Nothing was recorded.');
+  }
+  document.getElementById('mic').onclick = () => running ? stop() : start();
+
+  // YIN on a 16 kHz-decimated copy of the latest ~43 ms
+  function detect() {
+    an.getFloatTimeDomainData(buf);
+    const sr = ctx.sampleRate, step = Math.max(1, Math.round(sr / 16000)), fs = sr / step;
+    const L = Math.floor(1024 * (16000 / fs) * (fs / 16000)); // ~1024 samples at 16 kHz
+    const x = new Float32Array(Math.min(1024, Math.floor(buf.length / step)));
+    const off = buf.length - x.length * step;
+    let e = 0;
+    for (let i = 0; i < x.length; i++) { let s = 0; for (let k = 0; k < step; k++) s += buf[off + i * step + k]; x[i] = s / step; e += x[i] * x[i]; }
+    const rms = Math.sqrt(e / x.length);
+    const tmin = Math.floor(fs / 1000), tmax = Math.floor(fs / 70), N = x.length - tmax - 1;
+    if (N < tmax / 2 || rms < 0.006) return { rms, f: null };
+    const d = new Float32Array(tmax + 2); let cum = 0, best = -1;
+    for (let tau = 1; tau <= tmax + 1; tau++) {
+      let s = 0; for (let j = 0; j < N; j++) { const v = x[j] - x[j + tau]; s += v * v; }
+      cum += s; d[tau] = cum > 0 ? s * tau / cum : 1;
+    }
+    for (let tau = tmin; tau < tmax; tau++) if (d[tau] < 0.15) { while (tau + 1 < tmax && d[tau + 1] < d[tau]) tau++; best = tau; break; }
+    if (best < 0 || 1 - d[best] < 0.75) return { rms, f: null };
+    const a = d[best - 1], b = d[best], c = d[best + 1], den = a - 2 * b + c;
+    const tt = best + (Math.abs(den) > 1e-9 ? 0.5 * (a - c) / den : 0);
+    const f = fs / tt; return { rms, f: f >= 70 && f <= 1000 ? f : null };
+  }
+
+  // ---------- display ----------
+  const hist = [];               // {t, c (cents or NaN), db}
+  const recent = [];             // last few cents for smoothing
+  const cv = document.getElementById('trail');
+  let lastDraw = 0;
+  function loop() {
+    if (!running) return;
+    const now = performance.now() / 1000, r = detect();
+    let c = NaN;
+    if (r.f) {
+      let cc = centsOf(r.f);
+      if (recent.length) { const m = recent[recent.length - 1], k = Math.round((cc - m) / 1200); if (k && Math.abs(cc - k * 1200 - m) < 150) cc -= k * 1200; }
+      recent.push(cc); if (recent.length > 5) recent.shift();
+      const s = recent.slice().sort((p, q) => p - q); c = s[Math.floor(s.length / 2)];
+    } else recent.length = 0;
+    hist.push({ t: now, c, db: 20 * Math.log10(r.rms + 1e-9) });
+    while (hist.length && hist[0].t < now - 10) hist.shift();
+    show(c, now);
+    if (now - lastDraw > 1 / 30) { draw(now); lastDraw = now; }
+    requestAnimationFrame(loop);
+  }
+  function show(c, now) {
+    const swEl = document.getElementById('swar'), cEl = document.getElementById('cents'), pin = document.getElementById('pin');
+    if (isNaN(c)) { cEl.textContent = ''; pin.style.opacity = .25; return; }
+    const sw = swarOf(c - saCents());
+    swEl.textContent = sw.dv; const ro = document.createElement('span'); ro.className = 'ro'; ro.textContent = sw.ro; swEl.appendChild(ro);
+    const dev = Math.round(sw.err), a = Math.abs(dev);
+    cEl.textContent = (dev > 0 ? '+' : '') + dev + '¢'; cEl.className = 'cents ' + (a <= 10 ? 'good' : a <= 25 ? 'warn' : 'bad');
+    pin.style.opacity = 1; pin.style.left = (50 + Math.max(-50, Math.min(50, sw.dev)) ) + '%';
+    document.getElementById('hz').textContent = hzOf(c).toFixed(1) + ' Hz';
+    const m = Math.round(c / 100); document.getElementById('west').textContent = W[(m % 12 + 12) % 12] + (Math.floor(m / 12) - 1) + ' · ' + sw.name;
+    // centre of voice (last 10 s) and held note (last 0.6 s steady)
+    const v = hist.filter(h => !isNaN(h.c)).map(h => h.c).sort((p, q) => p - q);
+    if (v.length > 20) { const med = v[Math.floor(v.length / 2)], s2 = swarOf(med - saCents()); document.getElementById('centre').textContent = Math.round(hzOf(med)) + ' Hz · ' + s2.ro; }
+    const last = hist.filter(h => h.t > now - 0.6);
+    const lv = last.map(h => h.c);
+    if (lv.length > 8 && lv.every(x => !isNaN(x)) && Math.max(...lv) - Math.min(...lv) < 40) {
+      const mm = lv.slice().sort((p, q) => p - q)[Math.floor(lv.length / 2)], s3 = swarOf(mm - saCents());
+      document.getElementById('held').textContent = s3.ro + ' ' + (s3.err >= 0 ? '+' : '') + Math.round(s3.err) + '¢';
+    }
+  }
+  function draw(now) {
+    const Wd = cv.clientWidth, H = 260, dpr = window.devicePixelRatio || 1;
+    if (cv.width !== Math.round(Wd * dpr)) { cv.width = Math.round(Wd * dpr); cv.height = H * dpr; }
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, Wd, H);
+    const sa = saCents(), vals = hist.filter(h => !isNaN(h.c)).map(h => h.c - sa);
+    let lo = -300, hi = 1500;
+    if (vals.length) { const s = vals.slice().sort((p, q) => p - q); lo = Math.min(lo, s[Math.floor(s.length * .02)] - 150); hi = Math.max(lo + 900, s[Math.floor(s.length * .98)] + 150); }
+    lo = Math.max(lo, -1400); hi = Math.min(hi, 2600);
+    const Lm = 34, top = 8, pH = 190, vTop = 210, vH = 40, span = 8;
+    const y = (c) => top + pH - (c - lo) / (hi - lo) * pH, x = (t) => Lm + (1 - (now - t) / span) * (Wd - Lm - 6);
+    g.font = '10px "IBM Plex Mono", monospace'; g.textBaseline = 'middle';
+    for (let s = Math.ceil(lo / 100); s <= Math.floor(hi / 100); s++) {
+      const sw = swarOf(s * 100), strong = sw.idx === 0 || sw.idx === 7;
+      g.strokeStyle = strong ? '#8a6f33' : '#4a382d'; g.lineWidth = strong ? 1 : .5;
+      g.beginPath(); g.moveTo(Lm, y(s * 100)); g.lineTo(Wd - 6, y(s * 100)); g.stroke();
+      if (strong || [2, 3, 4, 5, 8, 9, 11].includes(sw.idx)) { g.fillStyle = '#b5a696'; g.fillText(sw.ro, 4, y(s * 100)); }
+    }
+    let pen = false; g.lineWidth = 2.5; g.lineCap = 'round';
+    for (const h of hist) {
+      if (now - h.t > span) continue;
+      if (isNaN(h.c)) { pen = false; continue; }
+      const rel = h.c - sa, e = Math.abs(swarOf(rel).err);
+      g.strokeStyle = e <= 10 ? '#7fbf6a' : e <= 25 ? '#c9a24a' : '#e07a5f';
+      const px = x(h.t), py = y(rel);
+      if (!pen) { g.beginPath(); g.moveTo(px, py); pen = true; } else { g.lineTo(px, py); g.stroke(); g.beginPath(); g.moveTo(px, py); }
+    }
+    // loudness
+    g.strokeStyle = '#d9cdb6'; g.lineWidth = 1.2; pen = false; g.beginPath();
+    for (const h of hist) {
+      if (now - h.t > span) continue;
+      const v = Math.max(0, Math.min(1, (h.db + 50) / 44)), py = vTop + vH - v * vH, px = x(h.t);
+      if (!pen) { g.moveTo(px, py); pen = true; } else g.lineTo(px, py);
+    }
+    g.stroke(); g.fillStyle = '#b5a696'; g.fillText('loud', 2, vTop + 4); g.fillText('soft', 2, vTop + vH - 2);
+  }
+
+  // ---------- drone ----------
+  let droneMode = null, droneNodes = [];
+  function stopDrone() { droneNodes.forEach(n => { try { n.stop(); } catch (e) {} }); droneNodes = []; droneMode = null; renderDrone(); }
+  function voice(f, gain) {
+    const real = new Float32Array(24), imag = new Float32Array(24);
+    for (let k = 1; k < 24; k++) imag[k] = (k % 2 ? 1 : .72) / Math.pow(k, .85);
+    const wave = ctx.createPeriodicWave(real, imag);
+    const o = ctx.createOscillator(); o.setPeriodicWave(wave); o.frequency.value = f;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3000;
+    const gn = ctx.createGain(); gn.gain.value = 0; gn.gain.setTargetAtTime(gain, ctx.currentTime, .05);
+    o.connect(lp); lp.connect(gn); gn.connect(ctx.destination); o.start();
+    return { stop: () => { gn.gain.setTargetAtTime(0, ctx.currentTime, .05); o.stop(ctx.currentTime + .3); } };
+  }
+  function startDrone(mode) {
+    ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume();
+    droneNodes.forEach(n => n.stop()); droneNodes = []; droneMode = mode;
+    const sa = hzOf(saCents());
+    droneNodes.push(voice(sa, .08));
+    if (mode === 'sapa') droneNodes.push(voice(sa * 0.75, .07));   // low Pa = Sa x 3/4
+    renderDrone();
+  }
+  function renderDrone() { document.querySelectorAll('[data-drone]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.drone === droneMode))); }
+  document.querySelectorAll('[data-drone]').forEach(b => b.onclick = () => droneMode === b.dataset.drone ? stopDrone() : startDrone(b.dataset.drone));
+})();
+</script>
+</body>
+</html>
