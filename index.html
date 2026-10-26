@@ -236,16 +236,28 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       status('This page needs to be opened from an https:// address (or on a computer as a file) for the microphone to work.', true); return;
     }
     try {
-      ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
-      await ctx.resume();
+      // open the mic FIRST: Bluetooth (headphones, car) switches into call mode at this moment and changes the sample rate
       // on speakers, let the browser's echo canceller remove the tuner's own drone/guide from the mic
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: !st.hp, noiseSuppression: false, autoGainControl: false } });
       guessHeadphones();
+      const tr = stream.getAudioTracks()[0], set = (tr && tr.getSettings) ? tr.getSettings() : {}, micRate = set.sampleRate || 0;
+      // then build a fresh audio engine at the mic's own rate. An engine made earlier can keep the old rate on some phones
+      // (iPhone + Bluetooth), and then every pitch reads too high: 48 kHz vs 16 kHz call mode = 3x = Sa read as high Pa.
+      const hadDrone = droneMode, hadGuide = !!P.guide;
+      if (hadDrone) stopDrone(); if (hadGuide) { try { P.guide.o.stop(); } catch (e) {} P.guide = null; }
+      if (ctx) { try { await ctx.close(); } catch (e) {} ctx = null; }
+      const AC = window.AudioContext || window.webkitAudioContext;
+      try { ctx = micRate ? new AC({ sampleRate: micRate }) : new AC(); } catch (e) { ctx = new AC(); }
+      await ctx.resume();
       const src = ctx.createMediaStreamSource(stream);
       an = ctx.createAnalyser(); an.fftSize = 4096; src.connect(an);
       buf = new Float32Array(an.fftSize); fbuf = new Float32Array(an.frequencyBinCount);
+      if (hadDrone) startDrone(hadDrone); if (hadGuide && P.playing) guideOn();
       running = true; document.getElementById('mic').textContent = 'Stop listening'; document.getElementById('hud-mic').textContent = 'Stop';
-      status('Listening. Sing or speak; hold a note to see it settle.');
+      const label = (tr && tr.label) || 'microphone', rate = micRate || ctx.sampleRate;
+      const callMode = rate <= 24000 || /bluetooth|hands-?free|airpods|buds|car|headset/i.test(label);
+      status('Listening on ' + label + ' (' + Math.round(rate / 1000) + ' kHz' + (micRate && micRate !== ctx.sampleRate ? ', engine ' + Math.round(ctx.sampleRate / 1000) + ' kHz' : '') + ').' +
+        (callMode ? ' This looks like a Bluetooth/call-quality mic: low notes are cut, so readings can wobble. For best results use the phone\'s own mic or wired earphones.' : ' Sing or speak; hold a note to see it settle.'), callMode);
       loop();
     } catch (e) {
       status('Microphone not available: ' + (e && e.name === 'NotAllowedError' ? 'permission was refused. Allow the microphone for this page in your browser settings.' : (e && e.message || e)), true);
@@ -256,6 +268,11 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     document.getElementById('mic').textContent = 'Start listening'; document.getElementById('hud-mic').textContent = 'Start'; status('Stopped. Nothing was recorded.'); live.c = NaN; hudUpdate(NaN);
   }
   document.getElementById('mic').onclick = () => running ? stop() : start();
+  // headphones / car connected or disconnected mid-session: reopen the mic and rebuild the engine at the new rate
+  let devT = 0;
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', () => {
+    clearTimeout(devT); devT = setTimeout(async () => { if (running) { stop(true); await start(); } }, 700);
+  });
   document.getElementById('hud-mic').onclick = () => running ? stop() : start();
   const live = { c: NaN, t: 0 };
   // ---------- headphones / sound leaking into the mic ----------
