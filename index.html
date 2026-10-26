@@ -61,6 +61,29 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
 .target-line .on { color: var(--good); font-weight: 500; }
 .map-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .btn.small { padding: 6px 12px; font-size: .9rem; }
+/* always-visible voice HUD: sticky strip on phones, fixed side card on wide screens */
+.hud { position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: center;
+  background: var(--teak-2); isolation: isolate; border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+#hud-body { height: 96px; width: auto; display: block; }
+.hud-swar { font-family: var(--font-display); font-size: 2.4rem; line-height: 1; }
+.hud-swar .ro { font-family: var(--font-mono); font-size: .85rem; color: var(--muted); margin-left: 6px; }
+.hud-cents { font-family: var(--font-mono); font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.hud-cents.good { color: var(--good); } .hud-cents.warn { color: var(--brass); } .hud-cents.bad { color: var(--bad); }
+.hud-side { display: flex; flex-direction: column; align-items: end; gap: 4px; text-align: right; }
+.hud-zone { font-size: .85rem; color: var(--brass); max-width: 9.5rem; }
+.hud-hz { font-family: var(--font-mono); font-size: .75rem; color: var(--muted); }
+@media (min-width: 1180px) {
+  .hud { position: fixed; top: 16px; left: max(16px, calc(50% - 22rem - 252px)); width: 220px; grid-template-columns: 1fr; text-align: center; justify-items: center; padding: 14px; }
+  #hud-body { height: 230px; }
+  .hud-side { align-items: center; text-align: center; }
+  .hud-swar { font-size: 3.2rem; }
+}
+#pathcv { height: 300px; touch-action: pan-y; }
+.path-live { font-size: 1rem; min-height: 1.5em; margin: 0; }
+.path-live .up, .path-live .down { color: var(--brass); font-weight: 500; } .path-live .on { color: var(--good); font-weight: 500; }
+.score { font-size: 1rem; margin: 0; }
+.chk { display: flex; align-items: center; gap: 6px; font-size: .95rem; }
+input[type=range] { width: 100%; accent-color: var(--brass); }
 </style>
 </head>
 <body>
@@ -69,6 +92,13 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
     <h1><span class="dev">सुर</span> Riyaz Live Tuner</h1>
     <p class="lede">Sing or speak and see the swar you're landing on, live. Nothing is recorded or saved; sound never leaves your phone.</p>
   </header>
+
+  <div class="hud" id="hud" aria-live="off">
+    <svg id="hud-body" viewBox="0 52 140 340" role="img" aria-label="Where this pitch is usually felt"></svg>
+    <div><div class="hud-swar" id="hud-swar">—</div><div class="hud-cents" id="hud-cents"></div></div>
+    <div class="hud-side"><div class="hud-zone" id="hud-zone">Start listening to see where your voice sits</div><div class="hud-hz" id="hud-hz"></div>
+      <button class="btn small primary" id="hud-mic" type="button">Start</button></div>
+  </div>
 
   <section class="panel">
     <div class="row">
@@ -99,10 +129,45 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
     <p class="note">Green band = within 10 cents, gold = within 25. The pale line under the trail is your loudness: on the volume ladder the trail should stay flat while it rises and falls.</p>
   </section>
 
+  <section class="panel" id="path-panel">
+    <div>
+      <div class="label">Follow the path</div>
+      <p class="note">A sargam line scrolls towards the playhead. Sing along so your dot rides the line; each note is written on it, with meend, harkat and vibrato marked. Make a random path, or load a song's line.</p>
+    </div>
+    <div class="row">
+      <div class="field"><label class="label" for="p-level">Level</label>
+        <select id="p-level"><option value="1">Easy · Sa to Pa, steps</option><option value="2" selected>Medium · octave, meends</option><option value="3">Hard · low Pa to taar Sa, harkats, vibrato</option></select></div>
+      <div class="field" style="flex:1;min-width:12rem"><label class="label" for="p-saved">Saved paths and songs</label><select id="p-saved"></select></div>
+    </div>
+    <div class="row">
+      <button class="btn" id="p-new" type="button">New random path</button>
+      <button class="btn" id="p-save" type="button">Save</button>
+      <button class="btn small" id="p-del" type="button">Delete</button>
+      <button class="btn small" id="p-load" type="button">Load song…</button>
+      <input type="file" id="p-file" accept=".json,application/json,audio/*,video/*" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
+    </div>
+    <p class="note" id="p-info"></p>
+    <canvas id="pathcv" aria-label="Sargam path scrolling past the playhead, with your pitch drawn over it"></canvas>
+    <p class="path-live" id="p-live" aria-live="off"></p>
+    <input type="range" id="p-seek" min="0" max="100" step="0.1" value="0" aria-label="Position in the path">
+    <div class="row">
+      <button class="btn primary" id="p-go" type="button">▶ Start</button>
+      <button class="btn" id="p-restart" type="button">⟲ Restart</button>
+      <div class="field"><label class="label" for="p-speed">Speed</label><select id="p-speed"><option value="0.5">0.5× slow</option><option value="0.75">0.75×</option><option value="1" selected>1×</option></select></div>
+      <div class="field"><label class="label" for="p-zoom">Zoom</label><select id="p-zoom"><option value="4">Close · 4 s</option><option value="7" selected>Normal · 7 s</option><option value="12">Wide · 12 s</option></select></div>
+    </div>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="p-guide"> Guide tone (headphones)</label>
+      <label class="chk"><input type="checkbox" id="p-loop"> Loop</label>
+    </div>
+    <p class="score" id="p-score"></p>
+    <button class="btn" id="p-first" type="button">♪ Play starting note</button>
+  </section>
+
   <section class="panel" id="map-panel">
     <div>
       <div class="label">Voice map</div>
-      <p class="note">Left: where each pitch is usually felt (it lights up as you sing). Right: the swar ladder from low Pa to high Pa. The gold dot is you; a rung glows green when you land on it. Each note you hold leaves a mark in the column on the far right. Tap a rung to set a target.</p>
+      <p class="note">The swar ladder from low Pa to high Pa; the coloured bands are where each range is usually felt (the body at the top lights up the same way). The gold dot is you; a rung glows green when you land on it. Each note you hold leaves a mark in the column on the far right. Tap a rung to set a target.</p>
     </div>
     <div class="map-wrap"><svg id="vmap" viewBox="0 0 380 540" role="img" aria-label="Voice map: body sensation zones beside a swar ladder with your live pitch"></svg></div>
     <p class="target-line" id="target-line" aria-live="polite">Tap Sa or Pa on the ladder to set a target.</p>
@@ -163,7 +228,7 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
       const src = ctx.createMediaStreamSource(stream);
       an = ctx.createAnalyser(); an.fftSize = 4096; src.connect(an);
       buf = new Float32Array(an.fftSize);
-      running = true; document.getElementById('mic').textContent = 'Stop listening';
+      running = true; document.getElementById('mic').textContent = 'Stop listening'; document.getElementById('hud-mic').textContent = 'Stop';
       status('Listening. Sing or speak; hold a note to see it settle.');
       loop();
     } catch (e) {
@@ -172,11 +237,27 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
   }
   function stop() {
     running = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null;
-    document.getElementById('mic').textContent = 'Start listening'; status('Stopped. Nothing was recorded.');
+    document.getElementById('mic').textContent = 'Start listening'; document.getElementById('hud-mic').textContent = 'Start'; status('Stopped. Nothing was recorded.'); live.c = NaN; hudUpdate(NaN);
   }
   document.getElementById('mic').onclick = () => running ? stop() : start();
+  document.getElementById('hud-mic').onclick = () => running ? stop() : start();
+  const live = { c: NaN, t: 0 };
 
   // YIN on a 16 kHz-decimated copy of the latest ~43 ms
+  function yinCore(x, fs) {
+    const tmin = Math.floor(fs / 1000), tmax = Math.floor(fs / 70), N = x.length - tmax - 1;
+    if (N < tmax / 2) return null;
+    const d = new Float32Array(tmax + 2); let cum = 0, best = -1;
+    for (let tau = 1; tau <= tmax + 1; tau++) {
+      let s = 0; for (let j = 0; j < N; j++) { const v = x[j] - x[j + tau]; s += v * v; }
+      cum += s; d[tau] = cum > 0 ? s * tau / cum : 1;
+    }
+    for (let tau = tmin; tau < tmax; tau++) if (d[tau] < 0.15) { while (tau + 1 < tmax && d[tau + 1] < d[tau]) tau++; best = tau; break; }
+    if (best < 0 || 1 - d[best] < 0.75) return null;
+    const a = d[best - 1], b = d[best], c = d[best + 1], den = a - 2 * b + c;
+    const f = fs / (best + (Math.abs(den) > 1e-9 ? 0.5 * (a - c) / den : 0));
+    return f >= 70 && f <= 1000 ? f : null;
+  }
   function detect() {
     an.getFloatTimeDomainData(buf);
     const sr = ctx.sampleRate, step = Math.max(1, Math.round(sr / 16000)), fs = sr / step;
@@ -215,6 +296,7 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
       recent.push(cc); if (recent.length > 5) recent.shift();
       const s = recent.slice().sort((p, q) => p - q); c = s[Math.floor(s.length / 2)];
     } else recent.length = 0;
+    live.c = c; live.t = now;
     hist.push({ t: now, c, db: 20 * Math.log10(r.rms + 1e-9) });
     while (hist.length && hist[0].t < now - 10) hist.shift();
     show(c, now);
@@ -223,8 +305,8 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
   }
   function show(c, now) {
     const swEl = document.getElementById('swar'), cEl = document.getElementById('cents'), pin = document.getElementById('pin');
-    if (isNaN(c)) { cEl.textContent = ''; pin.style.opacity = .25; mapUpdate(NaN); return; }
-    mapUpdate(c - saCents());
+    if (isNaN(c)) { cEl.textContent = ''; pin.style.opacity = .25; mapUpdate(NaN); hudUpdate(NaN); return; }
+    mapUpdate(c - saCents()); hudUpdate(c - saCents(), c);
     const sw = swarOf(c - saCents());
     swEl.textContent = sw.dv; const ro = document.createElement('span'); ro.className = 'ro'; ro.textContent = sw.ro; swEl.appendChild(ro);
     const dev = Math.round(sw.err), a = Math.abs(dev);
@@ -245,7 +327,7 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
   }
   // ---------- voice map: body zones + swar ladder + landing marks ----------
   const SVGNS = 'http://www.w3.org/2000/svg';
-  const MAP = { lo: -550, hi: 1950, top: 22, bottom: 520, lx0: 196, lx1: 318, landX: 330 };
+  const MAP = { lo: -550, hi: 1950, top: 22, bottom: 520, lx0: 70, lx1: 300, landX: 314 };
   const yOf = (rel) => MAP.bottom - (Math.max(MAP.lo, Math.min(MAP.hi, rel)) - MAP.lo) / (MAP.hi - MAP.lo) * (MAP.bottom - MAP.top);
   // zones in cents from Sa (a guide for a voice singing around this Sa; everyone feels it a little differently)
   const ZONES = [
@@ -261,24 +343,12 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
   let marker, markerLine, zoneEls = {}, rungEls = {}, landG, targetEl;
   function buildMap() {
     svg.innerHTML = '';
-    // body outline
-    const body = mk('g', { fill: 'none', stroke: '#8a6f33', 'stroke-width': 1.5 }, svg);
-    mk('ellipse', { cx: 70, cy: 118, rx: 40, ry: 52 }, body);
-    mk('path', { d: 'M56 168 L56 196 M84 168 L84 196' }, body);
-    mk('path', { d: 'M6 300 Q14 214 56 200 L84 200 Q126 214 134 300 L134 420 M6 300 L6 420' }, body);
-    mk('path', { d: 'M54 124 Q60 130 66 124 M74 124 Q80 130 86 124', 'stroke-width': 1 }, body);   // closed eyes
-    mk('path', { d: 'M62 156 Q70 162 78 156', 'stroke-width': 1 }, body);                            // mouth
-    ZONES.forEach(z => {
-      const g = mk('circle', { cx: z.cx, cy: z.cy, r: z.r, fill: z.col, opacity: 0.08 }, svg);
-      zoneEls[z.id] = g;
-    });
     // zone bands behind the ladder
     ZONES.forEach(z => {
       const y1 = yOf(Math.min(z.to, MAP.hi)), y2 = yOf(Math.max(z.from, MAP.lo));
       if (y2 <= y1) return;
       mk('rect', { x: MAP.lx0, y: y1, width: MAP.lx1 - MAP.lx0, height: y2 - y1, fill: z.col, opacity: 0.06 }, svg);
       const t = mk('text', { x: MAP.lx1 - 3, y: (y1 + y2) / 2 + 3, 'text-anchor': 'end', 'font-size': 9, fill: '#b5a696' }, svg); t.textContent = z.label;
-      mk('line', { x1: 112, y1: z.cy, x2: MAP.lx0 - 2, y2: (y1 + y2) / 2, stroke: z.col, 'stroke-width': 0.6, opacity: 0.35, 'stroke-dasharray': '2 3' }, svg);
     });
     // rungs
     rungEls = {};
@@ -293,7 +363,7 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
       }
       if (strong) { const hz = mk('text', { x: MAP.lx0 + 4, y: y - 4, 'font-size': 8, fill: '#b5a696' }, svg); hz.textContent = Math.round(hzOf(saCents() + rel)) + ' Hz'; }
       // tap target (full rung height band)
-      const hit = mk('rect', { x: MAP.lx0 - 46, y: y - 6, width: MAP.lx1 - MAP.lx0 + 46, height: 12, fill: 'transparent', style: 'cursor:pointer' }, svg);
+      const hit = mk('rect', { x: MAP.lx0 - 60, y: y - 6, width: MAP.lx1 - MAP.lx0 + 60, height: 12, fill: 'transparent', style: 'cursor:pointer' }, svg);
       hit.addEventListener('click', () => { target = rel; drawTarget(); });
     }
     mk('text', { x: MAP.landX + 22, y: 14, 'text-anchor': 'middle', 'font-size': 8, fill: '#b5a696' }, svg).textContent = 'held';
@@ -311,7 +381,7 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
   }
   function mapUpdate(rel) {
     if (!marker) return;
-    if (isNaN(rel)) { marker.setAttribute('opacity', 0.25); markerLine.setAttribute('opacity', 0); Object.values(zoneEls).forEach(z => z.setAttribute('opacity', 0.08)); return; }
+    if (isNaN(rel)) { marker.setAttribute('opacity', 0.25); markerLine.setAttribute('opacity', 0); return; }
     const y = yOf(rel), sw = swarOf(rel), e = Math.abs(sw.err), k = Math.round(rel / 100);
     marker.setAttribute('cy', y); marker.setAttribute('opacity', 1);
     marker.setAttribute('fill', e <= 10 ? '#7fbf6a' : e <= 25 ? '#c9a24a' : '#e07a5f');
@@ -320,11 +390,6 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
       const on = +kk === k && e <= 10;
       r.ln.setAttribute('stroke', on ? '#7fbf6a' : r.strong ? '#c9a24a' : r.shuddha ? '#8a7a68' : '#4a382d');
       r.ln.setAttribute('stroke-width', on ? 4 : r.strong ? 2.2 : r.shuddha ? 1 : 0.8);
-    });
-    ZONES.forEach(z => {
-      // soft glow: full in its zone, fading over 100 cents into neighbours
-      const d = rel < z.from ? z.from - rel : rel > z.to ? rel - z.to : 0;
-      zoneEls[z.id].setAttribute('opacity', Math.max(0.08, 0.85 - d / 120));
     });
     if (target != null) {
       const diff = Math.round(rel - target), tl = document.getElementById('target-line'); tl.textContent = '';
@@ -353,6 +418,29 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
     const parts = Object.entries(by).filter(([, v]) => v.length >= 2).map(([n, v]) => { const a = Math.round(v.reduce((x, y) => x + y, 0) / v.length); return n + ' ' + (a >= 0 ? '+' : '') + a + '¢ avg'; });
     document.getElementById('landing-summary').textContent = parts.length ? parts.join(' · ') : '';
   }
+  // ---------- HUD: body + current swar, always on screen ----------
+  (function buildBody() {
+    const b = document.getElementById('hud-body');
+    const body = mk('g', { fill: 'none', stroke: '#8a6f33', 'stroke-width': 2.5 }, b);
+    mk('ellipse', { cx: 70, cy: 118, rx: 40, ry: 52 }, body);
+    mk('path', { d: 'M56 168 L56 196 M84 168 L84 196' }, body);
+    mk('path', { d: 'M6 300 Q14 214 56 200 L84 200 Q126 214 134 300 L134 390 M6 300 L6 390' }, body);
+    mk('path', { d: 'M54 124 Q60 130 66 124 M74 124 Q80 130 86 124', 'stroke-width': 1.5 }, body);
+    mk('path', { d: 'M62 156 Q70 162 78 156', 'stroke-width': 1.5 }, body);
+    ZONES.forEach(z => { zoneEls[z.id] = mk('circle', { cx: z.cx, cy: z.cy, r: z.r * 1.15, fill: z.col, opacity: 0.08 }, b); });
+  })();
+  function zoneOf(rel) { return ZONES.find(z => rel >= z.from && rel < z.to) || (rel < 0 ? ZONES[0] : ZONES[ZONES.length - 1]); }
+  function hudUpdate(rel, c) {
+    const sEl = document.getElementById('hud-swar'), cEl = document.getElementById('hud-cents');
+    if (isNaN(rel)) { Object.values(zoneEls).forEach(z => z.setAttribute('opacity', 0.08)); cEl.textContent = ''; sEl.style.opacity = .4; return; }
+    ZONES.forEach(z => { const d = rel < z.from ? z.from - rel : rel > z.to ? rel - z.to : 0; zoneEls[z.id].setAttribute('opacity', Math.max(0.08, 0.9 - d / 120)); });
+    const sw = swarOf(rel), dev = Math.round(sw.err), a = Math.abs(dev);
+    sEl.style.opacity = 1; sEl.textContent = sw.dv; const ro = document.createElement('span'); ro.className = 'ro'; ro.textContent = sw.ro; sEl.appendChild(ro);
+    cEl.textContent = (dev > 0 ? '+' : '') + dev + '¢ ' + (a <= 10 ? 'on' : dev < 0 ? 'flat' : 'sharp'); cEl.className = 'hud-cents ' + (a <= 10 ? 'good' : a <= 25 ? 'warn' : 'bad');
+    document.getElementById('hud-zone').textContent = 'Feel it: ' + zoneOf(rel).label;
+    document.getElementById('hud-hz').textContent = hzOf(c).toFixed(0) + ' Hz';
+  }
+
   document.getElementById('clear-landings').onclick = () => { landings = []; drawLandings(); };
   document.getElementById('clear-target').onclick = () => { target = null; drawTarget(); };
   buildMap();
@@ -392,6 +480,245 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
     }
     g.stroke(); g.fillStyle = '#b5a696'; g.fillText('loud', 2, vTop + 4); g.fillText('soft', 2, vTop + vH - 2);
   }
+
+  // ---------- follow the path ----------
+  const P = { path: null, savedId: null, pt: -2, playing: false, last: 0, trail: [], vlo: -300, vhi: 900, sc: null, guide: null };
+  const pcv = document.getElementById('pathcv'), $ = (id) => document.getElementById(id);
+  const LEVELS = {
+    1: { name: 'Easy', set: [0, 200, 400, 500, 700], hold: [1.4, 2.2], meend: 0, harkat: 0, vib: 0, jump: 0.1, len: [7, 9] },
+    2: { name: 'Medium', set: [-100, 0, 200, 400, 500, 700, 900, 1100, 1200], hold: [0.9, 1.6], meend: 0.3, harkat: 0, vib: 0.12, jump: 0.2, len: [9, 12] },
+    3: { name: 'Hard', set: [-500, -300, -100, 0, 200, 400, 500, 700, 900, 1100, 1200], hold: [0.5, 1.3], meend: 0.35, harkat: 0.25, vib: 0.3, jump: 0.25, len: [11, 15] },
+  };
+  const rnd = ([a, b]) => a + Math.random() * (b - a);
+  function genPath(level) {
+    const L = LEVELS[level], fps = 50, c = [], notes = [], marks = [];
+    let cur = null;
+    const T = () => c.length / fps;
+    const hold = (rel, d, wob) => { const k = Math.round(d * fps); for (let j = 0; j < k; j++) { const f = j / k; c.push(rel + (wob && f > 0.4 ? 24 * Math.sin(2 * Math.PI * 5.5 * j / fps) * Math.min(1, (f - 0.4) * 4) : 0)); } cur = rel; };
+    const glide = (to, d) => { const k = Math.max(1, Math.round(d * fps)), from = cur; for (let j = 1; j <= k; j++) c.push(from + (to - from) * (1 - Math.cos(Math.PI * j / k)) / 2); cur = to; };
+    const rest = (d) => { for (let j = 0, k = Math.round(d * fps); j < k; j++) c.push(null); };
+    const set = L.set, n = L.len[0] + Math.floor(Math.random() * (L.len[1] - L.len[0] + 1)), saI = set.indexOf(0);
+    let i = Math.random() < 0.4 ? saI : Math.floor(Math.random() * set.length), prevI = -1;
+    const mid = (set.length - 1) / 2;
+    for (let s = 0; s < n; s++) {
+      const rel = set[i], lastNote = s === n - 1;
+      let d = rnd(L.hold); if (lastNote) d = Math.max(d, 1.8);
+      const vib = !lastNote && d >= 1 && Math.random() < L.vib;
+      notes.push({ t: T(), d, rel }); if (vib) marks.push({ t: T() + d * 0.55, rel, text: 'vibrato' });
+      hold(rel, d, vib);
+      if (lastNote) break;
+      if (Math.random() < L.harkat) {
+        const up = i + 1 < set.length ? set[i + 1] : rel + 200, dn = i > 0 ? set[i - 1] : rel - 100;
+        marks.push({ t: T(), rel: up, text: 'harkat' });
+        for (const r of [up, rel, dn, rel]) { glide(r, 0.05); notes.push({ t: T(), d: 0.16, rel: r, small: true }); hold(r, 0.16); }
+      }
+      let j;
+      if (s === n - 2) j = saI;
+      else if (Math.random() < L.jump) { const pool = [saI, set.indexOf(700), set.indexOf(1200)].filter(x => x >= 0 && x !== i); j = pool[Math.floor(Math.random() * pool.length)]; }
+      else { let tries = 0; do { const upP = 0.5 + (mid - i) / set.length * 0.6; j = i + (Math.random() < upP ? 1 : -1) * (Math.random() < 0.72 ? 1 : 2); tries++; } while ((j < 0 || j >= set.length || j === i || (j === prevI && tries < 6 && Math.random() < 0.75)) && tries < 40); if (j < 0 || j >= set.length) j = saI; }
+      prevI = i;
+      if (s > 0 && s % 4 === 3 && Math.random() < 0.6) { rest(0.45); cur = set[j]; i = j; continue; }
+      if (Math.random() < L.meend) { const md = rnd([0.6, 1.1]); marks.push({ t: T() + md / 2, rel: (cur + set[j]) / 2, text: 'meend' }); glide(set[j], md); }
+      else glide(set[j], 0.09);
+      i = j;
+    }
+    const seq = notes.filter(x => !x.small).slice(0, 6).map(x => swarOf(x.rel).ro).join(' ');
+    return { name: L.name + ' · ' + seq + ' …', kind: 'random', fps, c: c.map(v => v == null ? null : Math.round(v)), notes, marks };
+  }
+  // saved paths live in this browser only
+  const loadSaved = () => { try { return JSON.parse(localStorage.getItem('riyaz-paths') || '[]'); } catch (e) { return []; } };
+  const storeSaved = (a) => { try { localStorage.setItem('riyaz-paths', JSON.stringify(a)); return true; } catch (e) { $('p-info').textContent = 'Could not save: this browser blocked storage or it is full.'; return false; } };
+  function renderSaved() {
+    const sel = $('p-saved'), a = loadSaved(); sel.innerHTML = '';
+    const o0 = document.createElement('option'); o0.value = ''; o0.textContent = a.length ? (P.savedId ? '— pick a saved path —' : 'Current path (not saved)') : 'Nothing saved yet'; sel.appendChild(o0);
+    a.forEach(x => { const o = document.createElement('option'); o.value = x.id; o.textContent = (x.kind === 'song' ? '♫ ' : '') + x.name + (x.best != null ? ' · best ' + x.best + '%' : ''); sel.appendChild(o); });
+    sel.value = P.savedId || '';
+  }
+  const dur = () => P.path ? P.path.c.length / P.path.fps : 0;
+  const tgtAt = (t) => { if (!P.path || t < 0) return null; const v = P.path.c[Math.round(t * P.path.fps)]; return v == null ? null : v; };
+  function setPath(path, savedId) {
+    P.path = path; P.savedId = savedId || null; P.trail = []; P.sc = null; seekTo(-2); P.playing = false; $('p-go').textContent = '▶ Start';
+    const first = path.notes.length ? path.notes[0].rel : path.c.find(v => v != null);
+    const fs = swarOf(first); $('p-first').textContent = '♪ Play starting note: ' + fs.dv + ' ' + fs.name;
+    let info = Math.round(dur()) + ' s · ' + path.notes.filter(n => !n.small).length + ' notes';
+    if (path.sa_hz) info += ' · the original singer\'s Sa is ' + Math.round(path.sa_hz) + ' Hz. The line is drawn against your Sa; set Your Sa near it to sing in the original key.';
+    $('p-info').textContent = info; $('p-score').textContent = ''; renderSaved(); fitV(true);
+  }
+  function seekTo(t) { P.pt = t; P.trail = P.trail.filter(x => x.t < t - 0.05 && false); $('p-seek').value = dur() ? Math.max(0, Math.min(100, t / dur() * 100)) : 0; }
+  $('p-new').onclick = () => setPath(genPath(+$('p-level').value));
+  $('p-save').onclick = () => {
+    if (!P.path) return; const a = loadSaved();
+    if (P.savedId) { $('p-info').textContent = 'Already saved.'; return; }
+    const id = 'p' + Date.now(); a.unshift(Object.assign({ id, saved: new Date().toISOString() }, P.path)); if (storeSaved(a)) { P.savedId = id; renderSaved(); $('p-info').textContent = 'Saved in this browser. Pick it from the list any time.'; }
+  };
+  $('p-del').onclick = () => { if (!P.savedId) return; storeSaved(loadSaved().filter(x => x.id !== P.savedId)); P.savedId = null; renderSaved(); $('p-info').textContent = 'Deleted from saved paths (still loaded until you make a new one).'; };
+  $('p-saved').onchange = () => { const x = loadSaved().find(y => y.id === $('p-saved').value); if (x) setPath(x, x.id); };
+  $('p-load').onclick = () => $('p-file').click();
+  $('p-file').onchange = async () => {
+    const f = $('p-file').files[0]; $('p-file').value = ''; if (!f) return;
+    try {
+      if (/\.json$/i.test(f.name) || f.type === 'application/json') {
+        const j = JSON.parse(await f.text());
+        if (!Array.isArray(j.c) || !j.fps) throw new Error('not a song path file');
+        setPath({ name: j.title || f.name, kind: 'song', fps: j.fps, c: j.c, notes: (j.notes || []).map(n => ({ t: n.t, d: n.d, rel: n.rel })), marks: [], sa_hz: j.sa_hz });
+      } else setPath(await pathFromAudio(f));
+    } catch (e) { $('p-info').textContent = 'Could not read that file: ' + (e && e.message || e); }
+  };
+  // pitch line from an audio file, in the browser (works on a voice alone; music underneath confuses it)
+  async function pathFromAudio(file) {
+    ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+    $('p-info').textContent = 'Reading the voice line…';
+    const ab = await ctx.decodeAudioData(await file.arrayBuffer());
+    const sr = ab.sampleRate, step = Math.max(1, Math.round(sr / 16000)), fs = sr / step, maxS = Math.min(ab.duration, 300);
+    const n = Math.floor(maxS * fs), x = new Float32Array(n), chs = [...Array(ab.numberOfChannels).keys()].map(k => ab.getChannelData(k));
+    for (let i = 0; i < n; i++) { let s = 0; for (const ch of chs) for (let k = 0; k < step; k++) s += ch[i * step + k] || 0; x[i] = s / (step * chs.length); }
+    const hop = Math.round(fs * 0.02), W = 1024, F = Math.floor((n - W) / hop), raw = new Array(F), rms = new Float32Array(F);
+    for (let i = 0; i < F; i++) { let e = 0; for (let k = 0; k < W; k += 4) e += x[i * hop + k] ** 2; rms[i] = Math.sqrt(e / (W / 4)); }
+    const gate = Math.max(0.004, [...rms].sort((a, b) => a - b)[Math.floor(F * 0.95)] * 0.06);
+    for (let i = 0; i < F; i++) {
+      raw[i] = rms[i] > gate ? yinCore(x.subarray(i * hop, i * hop + W), fs) : null;
+      if (i % 150 === 0) { $('p-info').textContent = 'Reading the voice line… ' + Math.round(i / F * 100) + '%'; await new Promise(r => setTimeout(r)); }
+    }
+    const sa = saCents(); let c = raw.map(f => f ? centsOf(f) - sa : null);
+    c = c.map((v, i) => { if (v == null) return null; const w = c.slice(Math.max(0, i - 2), i + 3).filter(y => y != null).sort((a, b) => a - b), m = w[w.length >> 1]; const k = Math.round((v - m) / 1200); return k && Math.abs(v - k * 1200 - m) < 150 ? v - k * 1200 : v; });
+    c = c.map((v, i) => { if (v == null) return null; const w = c.slice(Math.max(0, i - 2), i + 3).filter(y => y != null).sort((a, b) => a - b); return Math.round(w[w.length >> 1]); });
+    for (let i = 0; i < c.length;) { if (c[i] == null) { i++; continue; } let j = i; while (j < c.length && c[j] != null) j++; if (j - i < 4) for (let k = i; k < j; k++) c[k] = null; i = j; }
+    const notes = []; let run = [];
+    const flush = (end) => { if (run.length >= 15) { const v = run.map(i => c[i]), s = v.slice().sort((a, b) => a - b), med = s[s.length >> 1]; if (Math.abs(v[v.length - 1] - v[0]) < 60) notes.push({ t: run[0] / 50, d: run.length / 50, rel: med }); } run = []; };
+    for (let i = 0; i < c.length; i++) {
+      if (c[i] == null) { flush(); continue; }
+      if (run.length) { const s = run.slice(-8).map(k => c[k]).sort((a, b) => a - b); if (Math.abs(c[i] - s[s.length >> 1]) > 45) flush(); }
+      run.push(i);
+    }
+    flush();
+    const voiced = c.filter(v => v != null).length / Math.max(1, c.length);
+    $('p-info').textContent = '';
+    return { name: file.name.replace(/\.[^.]+$/, ''), kind: 'song', fps: 50, c, notes, marks: [], note: voiced < 0.2 ? 'little voice found' : '' };
+  }
+  // transport
+  $('p-go').onclick = async () => {
+    if (!P.path) setPath(genPath(+$('p-level').value));
+    if (P.playing) { P.playing = false; $('p-go').textContent = '▶ Start'; guideOff(); return; }
+    if (!running) await start();
+    if (P.pt >= dur()) { seekTo(-2); P.trail = []; }
+    if (P.pt <= 0) P.sc = { tot: 0, sung: 0, on: 0, close: 0 };
+    P.playing = true; P.last = performance.now() / 1000; $('p-go').textContent = '❚❚ Pause'; $('p-score').textContent = '';
+    if ($('p-guide').checked) guideOn();
+  };
+  $('p-restart').onclick = () => { seekTo(-2); P.trail = []; P.sc = P.playing ? { tot: 0, sung: 0, on: 0, close: 0 } : null; $('p-score').textContent = ''; };
+  $('p-seek').oninput = () => { seekTo(+$('p-seek').value / 100 * dur()); P.trail = []; P.sc = null; };
+  $('p-guide').onchange = () => { if ($('p-guide').checked && P.playing) guideOn(); else guideOff(); };
+  $('p-zoom').onchange = () => fitV(true);
+  $('p-first').onclick = () => {
+    if (!P.path) setPath(genPath(+$('p-level').value));
+    ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume();
+    const first = P.path.notes.length ? P.path.notes[0].rel : P.path.c.find(v => v != null);
+    const v = voice(hzOf(saCents() + first), .12); setTimeout(() => v.stop(), 1800);
+  };
+  function guideOn() {
+    if (P.guide) return; ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+    const real = new Float32Array(16), imag = new Float32Array(16); for (let k = 1; k < 16; k++) imag[k] = 1 / Math.pow(k, 1.2);
+    const o = ctx.createOscillator(), g = ctx.createGain(); o.setPeriodicWave(ctx.createPeriodicWave(real, imag)); g.gain.value = 0; o.connect(g); g.connect(ctx.destination); o.start(); P.guide = { o, g };
+  }
+  function guideOff() { if (!P.guide) return; const { o, g } = P.guide; g.gain.setTargetAtTime(0, ctx.currentTime, .03); o.stop(ctx.currentTime + .2); P.guide = null; }
+  function fitV(snap) {
+    if (!P.path) return;
+    const span = +$('p-zoom').value, a = Math.max(0, Math.floor((P.pt - span * 0.3) * P.path.fps)), b = Math.ceil((P.pt + span * 1.1) * P.path.fps);
+    const v = P.path.c.slice(a, b).filter(x => x != null);
+    if (!v.length) return;
+    let lo = Math.min(...v) - 220, hi = Math.max(...v) + 220; const minSpan = span <= 4 ? 600 : 900;
+    if (hi - lo < minSpan) { const m = (lo + hi) / 2; lo = m - minSpan / 2; hi = m + minSpan / 2; }
+    if (snap) { P.vlo = lo; P.vhi = hi; } else { P.vlo += (lo - P.vlo) * 0.08; P.vhi += (hi - P.vhi) * 0.08; }
+  }
+  function pathFrame() {
+    const now = performance.now() / 1000, dt = Math.min(0.1, now - P.last); P.last = now;
+    if (P.path && P.playing) {
+      P.pt += dt * +$('p-speed').value;
+      const tg = tgtAt(P.pt), you = running && now - live.t < 0.15 && !isNaN(live.c) ? live.c - saCents() : NaN;
+      if (!isNaN(you)) P.trail.push({ t: P.pt, rel: you });
+      if (P.trail.length > 4000) P.trail.splice(0, 1000);
+      if (P.sc && tg != null && P.pt >= 0) { P.sc.tot++; if (!isNaN(you)) { P.sc.sung++; const d = Math.abs(you - tg); if (d <= 25) P.sc.on++; if (d <= 50) P.sc.close++; } }
+      if (P.guide) { if (tg != null) { P.guide.o.frequency.setTargetAtTime(hzOf(saCents() + tg), ctx.currentTime, 0.015); P.guide.g.gain.setTargetAtTime(0.07, ctx.currentTime, 0.03); } else P.guide.g.gain.setTargetAtTime(0, ctx.currentTime, 0.03); }
+      // live line under the canvas
+      const el = $('p-live'); el.textContent = '';
+      if (P.pt < 0) el.textContent = 'Get ready… ' + Math.ceil(-P.pt);
+      else if (tg != null) {
+        const ts = swarOf(tg), s = document.createElement('span');
+        if (isNaN(you)) s.textContent = 'Now: ' + ts.dv + ' ' + ts.ro + ' — sing';
+        else { const d = Math.round(you - tg); if (Math.abs(Math.abs(d) - 1200) <= 60) { s.className = 'up'; s.textContent = 'Right note, but an octave ' + (d < 0 ? 'below' : 'above') + ': aim for ' + ts.ro; } else if (Math.abs(d) <= 25) { s.className = 'on'; s.textContent = '✓ On the line · ' + ts.ro + ' (' + (d >= 0 ? '+' : '') + d + '¢)'; } else { s.className = d < 0 ? 'up' : 'down'; s.textContent = (d < 0 ? '↑ go up ' : '↓ come down ') + Math.abs(d) + '¢ to ' + ts.ro; } }
+        el.appendChild(s);
+      } else el.textContent = 'Breathe';
+      $('p-seek').value = Math.max(0, Math.min(100, P.pt / dur() * 100));
+      if (P.pt > dur() + 0.6) {
+        if ($('p-loop').checked) { showScore(); seekTo(-1.5); P.trail = []; P.sc = { tot: 0, sung: 0, on: 0, close: 0 }; }
+        else { P.playing = false; $('p-go').textContent = '▶ Start again'; guideOff(); showScore(); P.pt = dur(); }
+      }
+    }
+    if (P.path) { fitV(false); drawPath(); }
+    requestAnimationFrame(pathFrame);
+  }
+  function showScore() {
+    const s = P.sc; if (!s || s.tot < 20) return;
+    const on = Math.round(s.on / s.tot * 100), close = Math.round(s.close / s.tot * 100), sung = Math.round(s.sung / s.tot * 100);
+    $('p-score').textContent = 'On the line (within 25¢) ' + on + '% · close (50¢) ' + close + '% · you sang ' + sung + '% of it' + (+$('p-speed').value < 1 ? ' · at ' + $('p-speed').value + '× speed' : '');
+    if (P.savedId) { const a = loadSaved(), x = a.find(y => y.id === P.savedId); if (x && (x.best == null || on > x.best)) { x.best = on; storeSaved(a); renderSaved(); } }
+  }
+  function drawPath() {
+    const Wd = pcv.clientWidth, H = pcv.clientHeight || 300, dpr = window.devicePixelRatio || 1;
+    if (!Wd) return;
+    if (pcv.width !== Math.round(Wd * dpr) || pcv.height !== Math.round(H * dpr)) { pcv.width = Math.round(Wd * dpr); pcv.height = Math.round(H * dpr); }
+    const g = pcv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, Wd, H);
+    const span = +$('p-zoom').value, Lm = 38, ph = Lm + (Wd - Lm) * 0.3, fps = P.path.fps;
+    const x = (t) => ph + (t - P.pt) / span * (Wd - Lm), y = (r) => 10 + (H - 20) * (1 - (r - P.vlo) / (P.vhi - P.vlo));
+    const t0 = P.pt - (ph - Lm) / (Wd - Lm) * span, t1 = P.pt + (Wd - ph) / (Wd - Lm) * span;
+    // zone tint + rungs
+    ZONES.forEach(z => { const a = y(Math.min(z.to, P.vhi)), b = y(Math.max(z.from, P.vlo)); if (b > a) { g.fillStyle = z.col; g.globalAlpha = 0.05; g.fillRect(Lm, a, Wd - Lm, b - a); g.globalAlpha = 1; } });
+    g.textBaseline = 'middle';
+    for (let k = Math.ceil(P.vlo / 100); k <= Math.floor(P.vhi / 100); k++) {
+      const sw = swarOf(k * 100), strong = sw.idx === 0 || sw.idx === 7, sh = [0, 2, 4, 5, 7, 9, 11].includes(sw.idx);
+      g.strokeStyle = strong ? '#8a6f33' : sh ? '#4a382d' : '#33261f'; g.lineWidth = strong ? 1.4 : 0.7;
+      g.beginPath(); g.moveTo(Lm, y(k * 100)); g.lineTo(Wd, y(k * 100)); g.stroke();
+      if (sh) { g.fillStyle = strong ? '#f1e9dc' : '#b5a696'; g.font = (strong ? '13px ' : '11px ') + '"IBM Plex Mono", monospace'; g.fillText(sw.ro, 4, y(k * 100)); }
+    }
+    // the path
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    const a = Math.max(0, Math.floor(t0 * fps)), b = Math.min(P.path.c.length - 1, Math.ceil(t1 * fps));
+    for (const pass of [0, 1]) {
+      g.lineWidth = pass ? 3 : 12; g.strokeStyle = pass ? '#efe6d4' : 'rgba(201,162,74,.28)';
+      let pen = false; g.beginPath();
+      for (let i = a; i <= b; i++) { const v = P.path.c[i]; if (v == null) { pen = false; continue; } const px = x(i / fps), py = y(v); if (!pen) { g.moveTo(px, py); pen = true; } else g.lineTo(px, py); }
+      g.stroke();
+    }
+    // note names written on the way
+    for (const n of P.path.notes) {
+      if (n.t + n.d < t0 || n.t > t1) continue;
+      const sw = swarOf(n.rel), px = Math.max(x(n.t), Lm + 2), py = y(n.rel) - (n.small ? 12 : 16), past = n.t + n.d < P.pt;
+      g.globalAlpha = past ? 0.45 : 1; g.fillStyle = n.small ? '#d9cdb6' : '#f1e9dc';
+      g.font = (n.small ? '13px ' : '19px ') + '"Tiro Devanagari Hindi", serif'; g.fillText(sw.dv, px, py);
+      const w = g.measureText(sw.dv).width; g.font = (n.small ? '9px ' : '11px ') + '"IBM Plex Mono", monospace'; g.fillStyle = '#c9a24a'; g.fillText(sw.ro, px + w + 3, py + 1);
+      g.globalAlpha = 1;
+    }
+    g.font = 'italic 11px "Mukta", sans-serif'; g.fillStyle = '#c9a24a';
+    for (const m of (P.path.marks || [])) { if (m.t < t0 || m.t > t1) continue; g.fillText(m.text, x(m.t) - 16, y(m.rel) + 20); }
+    // your line
+    g.lineWidth = 3.5; let pen = false, prev = null;
+    for (const p of P.trail) {
+      if (p.t < t0) continue;
+      if (prev && p.t - prev.t > 0.12) pen = false;
+      const tg = tgtAt(p.t), d = tg == null ? 999 : Math.abs(p.rel - tg);
+      g.strokeStyle = d <= 25 ? '#7fbf6a' : d <= 50 ? '#c9a24a' : '#e07a5f';
+      if (pen) { g.beginPath(); g.moveTo(x(prev.t), y(prev.rel)); g.lineTo(x(p.t), y(p.rel)); g.stroke(); }
+      pen = true; prev = p;
+    }
+    // playhead, target dot and your dot
+    g.strokeStyle = 'rgba(241,233,220,.5)'; g.lineWidth = 1; g.beginPath(); g.moveTo(ph, 0); g.lineTo(ph, H); g.stroke();
+    const tg = tgtAt(P.pt); if (tg != null) { g.strokeStyle = '#efe6d4'; g.lineWidth = 2; g.beginPath(); g.arc(ph, y(tg), 9, 0, 7); g.stroke(); }
+    const you = running && performance.now() / 1000 - live.t < 0.15 && !isNaN(live.c) ? live.c - saCents() : NaN;
+    if (!isNaN(you)) { const d = tg == null ? 999 : Math.abs(you - tg); g.fillStyle = d <= 25 ? '#7fbf6a' : d <= 50 ? '#c9a24a' : '#e07a5f'; g.beginPath(); g.arc(ph, Math.max(6, Math.min(H - 6, y(you))), 6, 0, 7); g.fill(); }
+    if (P.pt < 0) { g.fillStyle = '#f1e9dc'; g.font = '40px "Tiro Devanagari Hindi", serif'; g.textAlign = 'center'; g.fillText(String(Math.ceil(-P.pt)), ph, H / 2); g.textAlign = 'left'; }
+  }
+  renderSaved(); setPath(genPath(2)); requestAnimationFrame(pathFrame);
+  saSel.addEventListener('change', () => { if (P.path) $('p-first').textContent = $('p-first').textContent; });
 
   // ---------- drone ----------
   let droneMode = null, droneNodes = [];
