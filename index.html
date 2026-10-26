@@ -199,7 +199,10 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     <div class="row">
       <button class="btn" data-drone="sa" aria-pressed="false" type="button">Sa</button>
       <button class="btn" data-drone="sapa" aria-pressed="false" type="button">Sa + low Pa</button>
+      <div class="field"><label class="label" for="dvol">Volume</label>
+        <select id="dvol"><option value="0.08">Soft</option><option value="0.18">Normal</option><option value="0.32">Loud (car, Bluetooth)</option></select></div>
     </div>
+    <p class="note" id="drone-note"></p>
   </section>
 </div>
 
@@ -209,7 +212,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   const W = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
   const SW = [['सा','S','Sa'],['रे॒','r','komal Re'],['रे','R','Re'],['ग॒','g','komal Ga'],['ग','G','Ga'],['म','m','Ma'],['म॑','M','tivra Ma'],['प','P','Pa'],['ध॒','d','komal Dha'],['ध','D','Dha'],['नि॒','n','komal Ni'],['नि','N','Ni']];
   const JI = [0,112,204,316,386,498,590,702,814,884,996,1088];
-  const st = { sa: 6, oct: 0, hp: false, hpSet: false };
+  const st = { sa: 6, oct: 0, hp: false, hpSet: false, dvol: 0.18 };
   try { const s = JSON.parse(localStorage.getItem('riyaz-tuner') || 'null'); if (s) Object.assign(st, s); } catch (e) {}
   const saSel = document.getElementById('sa'), octSel = document.getElementById('oct');
   KEYS.forEach(([w, h], i) => { const o = document.createElement('option'); o.value = i; o.textContent = h + ' · ' + w; saSel.appendChild(o); });
@@ -236,6 +239,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       status('This page needs to be opened from an https:// address (or on a computer as a file) for the microphone to work.', true); return;
     }
     try {
+      setSession('play-and-record');
       // open the mic FIRST: Bluetooth (headphones, car) switches into call mode at this moment and changes the sample rate
       // on speakers, let the browser's echo canceller remove the tuner's own drone/guide from the mic
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: !st.hp, noiseSuppression: false, autoGainControl: false } });
@@ -264,17 +268,24 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     }
   }
   function stop(quiet) {
-    running = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; if (quiet) return;
+    running = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; if (quiet) return; setSession(droneMode ? 'playback' : 'auto');
     document.getElementById('mic').textContent = 'Start listening'; document.getElementById('hud-mic').textContent = 'Start'; status('Stopped. Nothing was recorded.'); live.c = NaN; hudUpdate(NaN);
   }
   document.getElementById('mic').onclick = () => running ? stop() : start();
   // headphones / car connected or disconnected mid-session: reopen the mic and rebuild the engine at the new rate
-  let devT = 0;
+  // phones only let sound (re)start from a tap, so the rebuild waits for the next tap anywhere on the page
+  let devChanged = false, devT = 0;
   if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', () => {
-    clearTimeout(devT); devT = setTimeout(async () => { if (running) { stop(true); await start(); } }, 700);
+    clearTimeout(devT); devT = setTimeout(() => { if (running) { devChanged = true; status('Headphones or car audio changed. Tap anywhere on the page to reconnect.', true); } }, 700);
   });
+  document.addEventListener('pointerdown', async (e) => {
+    if (devChanged && running && !(e.target.closest && e.target.closest('#mic,#hud-mic'))) { devChanged = false; stop(true); await start(); return; }
+    if (ctx && ctx.state !== 'running' && ctx.state !== 'closed') { try { await ctx.resume(); } catch (er) {} }
+  }, true);
   document.getElementById('hud-mic').onclick = () => running ? stop() : start();
   const live = { c: NaN, t: 0 };
+  // iPhone (Safari 17+): 'playback' plays even with the silent switch on; 'play-and-record' while the mic is open
+  function setSession(type) { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (e) {} }
   // ---------- headphones / sound leaking into the mic ----------
   const hpBox = document.getElementById('hp'); hpBox.checked = !!st.hp;
   hpBox.onchange = async () => { st.hp = hpBox.checked; st.hpSet = true; save(); updateLeak(); if (running) { stop(true); await start(); } };
@@ -863,10 +874,12 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
 
   // ---------- drone ----------
   let droneMode = null, droneNodes = [];
-  function stopDrone() { droneNodes.forEach(n => { try { n.stop(); } catch (e) {} }); droneNodes = []; droneMode = null; renderDrone(); }
+  function stopDrone() { droneNodes.forEach(n => { try { n.stop(); } catch (e) {} }); droneNodes = []; droneMode = null; renderDrone(); document.getElementById('drone-note').textContent = ''; }
   function voice(f, gain) {
     const real = new Float32Array(24), imag = new Float32Array(24);
-    for (let k = 1; k < 24; k++) imag[k] = (k % 2 ? 1 : .72) / Math.pow(k, .85);
+    // extra energy in harmonics 2-8 (370 Hz - 1.5 kHz): Bluetooth calls and car speakers cut below ~300 Hz, where Sa and
+    // low Pa sit, so the pitch has to come through the overtones (like a tanpura's buzz) or the drone sounds silent
+    for (let k = 1; k < 24; k++) imag[k] = (k % 2 ? 1 : .72) / Math.pow(k, .85) * (k >= 2 && k <= 8 ? 1.8 : 1);
     const wave = ctx.createPeriodicWave(real, imag);
     const o = ctx.createOscillator(); o.setPeriodicWave(wave); o.frequency.value = f;
     const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3000;
@@ -878,9 +891,21 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume();
     droneNodes.forEach(n => n.stop()); droneNodes = []; droneMode = mode;
     const sa = hzOf(saCents());
-    droneNodes.push(voice(sa, .08));
-    if (mode === 'sapa') droneNodes.push(voice(sa * 0.75, .07));   // low Pa = Sa x 3/4
-    renderDrone();
+    setSession(running ? 'play-and-record' : 'playback');
+    const v = +st.dvol || 0.18;
+    droneNodes.push(voice(sa, v));
+    if (mode === 'sapa') droneNodes.push(voice(sa * 0.75, v * 0.85));   // low Pa = Sa x 3/4
+    renderDrone(); checkSound();
+  }
+  const dvolSel = document.getElementById('dvol'); dvolSel.value = String(st.dvol);
+  dvolSel.onchange = () => { st.dvol = +dvolSel.value; save(); if (droneMode) startDrone(droneMode); };
+  function checkSound() {    // phones block sound until a tap, and Bluetooth route changes can freeze it
+    const n = document.getElementById('drone-note');
+    setTimeout(() => {
+      if (!droneMode) { n.textContent = ''; return; }
+      n.textContent = ctx.state === 'running' ? 'Playing ' + (droneMode === 'sa' ? 'Sa' : 'Sa + low Pa') + ' at ' + Math.round(hzOf(saCents())) + ' Hz. Nothing heard in the car? Use Loud, turn up the car volume (call volume, if the mic is on).'
+        : 'Sound is blocked by the phone (' + ctx.state + '). Tap the drone button again.';
+    }, 400);
   }
   function renderDrone() { updateLeak(); document.querySelectorAll('[data-drone]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.drone === droneMode))); }
   document.querySelectorAll('[data-drone]').forEach(b => b.onclick = () => droneMode === b.dataset.drone ? stopDrone() : startDrone(b.dataset.drone));
