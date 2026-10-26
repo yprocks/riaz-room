@@ -72,6 +72,14 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
 .hud-side { display: flex; flex-direction: column; align-items: end; gap: 4px; text-align: right; }
 .hud-zone { font-size: .85rem; color: var(--brass); max-width: 9.5rem; }
 .hud-hz { font-family: var(--font-mono); font-size: .75rem; color: var(--muted); }
+.hud-strain { font-size: .8rem; line-height: 1.25; max-width: 11rem; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); }
+.hud-strain.ok { color: var(--good); border-color: rgba(127,191,106,.45); }
+.hud-strain.warn { color: #120d0b; background: var(--brass); border-color: var(--brass); }
+.hud-strain.bad { color: #fff; background: #b8452f; border-color: #e07a5f; }
+.hud-strain:empty { display: none; }
+.leak { font-size: .85rem; padding: 6px 10px; border-radius: 8px; background: rgba(224,122,95,.14); border: 1px solid rgba(224,122,95,.5); color: var(--fg); margin: 0; }
+.leak[hidden] { display: none; }
+.hint { font-size: .9rem; color: var(--brass); margin: 0; min-height: 1.3em; }
 @media (min-width: 1180px) {
   .hud { position: fixed; top: 16px; left: max(16px, calc(50% - 22rem - 252px)); width: 220px; grid-template-columns: 1fr; text-align: center; justify-items: center; padding: 14px; }
   #hud-body { height: 230px; }
@@ -96,7 +104,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   <div class="hud" id="hud" aria-live="off">
     <svg id="hud-body" viewBox="0 52 140 340" role="img" aria-label="Where this pitch is usually felt"></svg>
     <div><div class="hud-swar" id="hud-swar">—</div><div class="hud-cents" id="hud-cents"></div></div>
-    <div class="hud-side"><div class="hud-zone" id="hud-zone">Start listening to see where your voice sits</div><div class="hud-hz" id="hud-hz"></div>
+    <div class="hud-side"><div class="hud-zone" id="hud-zone">Start listening to see where your voice sits</div><div class="hud-strain" id="hud-strain" aria-live="polite"></div><div class="hud-hz" id="hud-hz"></div>
       <button class="btn small primary" id="hud-mic" type="button">Start</button></div>
   </div>
 
@@ -107,6 +115,11 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
         <select id="oct"><option value="-1">Low</option><option value="0" selected>Middle (most men)</option><option value="1">High (most women)</option></select></div>
       <button class="btn primary" id="mic" type="button">Start listening</button>
     </div>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="hp"> I'm wearing headphones</label>
+      <button class="btn small" id="sa-from-held" type="button" title="Hold your Sa steadily, then tap">Use my held note as Sa</button>
+    </div>
+    <p class="leak" id="leak" hidden></p>
     <p class="note" id="status">Tap Start listening and allow the microphone.</p>
   </section>
 
@@ -126,6 +139,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       <div class="fact"><div class="label">Centre of your voice (last 10 s)</div><div class="v" id="centre">—</div></div>
       <div class="fact"><div class="label">Held note</div><div class="v" id="held">—</div></div>
     </div>
+    <p class="hint" id="sa-hint"></p>
     <p class="note">Green band = within 10 cents, gold = within 25. The pale line under the trail is your loudness: on the volume ladder the trail should stay flat while it rises and falls.</p>
   </section>
 
@@ -195,7 +209,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   const W = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
   const SW = [['सा','S','Sa'],['रे॒','r','komal Re'],['रे','R','Re'],['ग॒','g','komal Ga'],['ग','G','Ga'],['म','m','Ma'],['म॑','M','tivra Ma'],['प','P','Pa'],['ध॒','d','komal Dha'],['ध','D','Dha'],['नि॒','n','komal Ni'],['नि','N','Ni']];
   const JI = [0,112,204,316,386,498,590,702,814,884,996,1088];
-  const st = { sa: 6, oct: 0 };
+  const st = { sa: 6, oct: 0, hp: false, hpSet: false };
   try { const s = JSON.parse(localStorage.getItem('riyaz-tuner') || 'null'); if (s) Object.assign(st, s); } catch (e) {}
   const saSel = document.getElementById('sa'), octSel = document.getElementById('oct');
   KEYS.forEach(([w, h], i) => { const o = document.createElement('option'); o.value = i; o.textContent = h + ' · ' + w; saSel.appendChild(o); });
@@ -215,7 +229,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   }
 
   // ---------- audio ----------
-  let ctx = null, stream = null, an = null, buf = null, running = false;
+  let ctx = null, stream = null, an = null, buf = null, fbuf = null, running = false, frameN = 0;
   const status = (t, bad) => { const el = document.getElementById('status'); el.textContent = t; el.className = 'note' + (bad ? ' err' : ''); };
   async function start() {
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -224,10 +238,12 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     try {
       ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
       await ctx.resume();
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      // on speakers, let the browser's echo canceller remove the tuner's own drone/guide from the mic
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: !st.hp, noiseSuppression: false, autoGainControl: false } });
+      guessHeadphones();
       const src = ctx.createMediaStreamSource(stream);
       an = ctx.createAnalyser(); an.fftSize = 4096; src.connect(an);
-      buf = new Float32Array(an.fftSize);
+      buf = new Float32Array(an.fftSize); fbuf = new Float32Array(an.frequencyBinCount);
       running = true; document.getElementById('mic').textContent = 'Stop listening'; document.getElementById('hud-mic').textContent = 'Stop';
       status('Listening. Sing or speak; hold a note to see it settle.');
       loop();
@@ -235,13 +251,43 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       status('Microphone not available: ' + (e && e.name === 'NotAllowedError' ? 'permission was refused. Allow the microphone for this page in your browser settings.' : (e && e.message || e)), true);
     }
   }
-  function stop() {
-    running = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null;
+  function stop(quiet) {
+    running = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; if (quiet) return;
     document.getElementById('mic').textContent = 'Start listening'; document.getElementById('hud-mic').textContent = 'Start'; status('Stopped. Nothing was recorded.'); live.c = NaN; hudUpdate(NaN);
   }
   document.getElementById('mic').onclick = () => running ? stop() : start();
   document.getElementById('hud-mic').onclick = () => running ? stop() : start();
   const live = { c: NaN, t: 0 };
+  // ---------- headphones / sound leaking into the mic ----------
+  const hpBox = document.getElementById('hp'); hpBox.checked = !!st.hp;
+  hpBox.onchange = async () => { st.hp = hpBox.checked; st.hpSet = true; save(); updateLeak(); if (running) { stop(true); await start(); } };
+  async function guessHeadphones() {
+    if (st.hpSet) return;
+    try {
+      const outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput' || d.kind === 'audioinput');
+      const hp = outs.some(d => /head|ear ?pods?|airpods|buds|earphone|bluetooth|wh-|wf-|beats|bose|jabra/i.test(d.label || ''));
+      if (hp !== st.hp) { st.hp = hp; hpBox.checked = hp; save(); updateLeak(); }
+    } catch (e) {}
+  }
+  let noteUntil = 0;                                  // 'Play starting note' end time
+  const tunerSounding = () => !!droneMode || !!P.guide || performance.now() / 1000 < noteUntil;
+  const micPaused = () => !st.hp && (!!P.guide || performance.now() / 1000 < noteUntil);
+  function updateLeak() {
+    const el = document.getElementById('leak');
+    if (st.hp || !tunerSounding()) { el.hidden = true; return; }
+    el.hidden = false;
+    el.textContent = droneMode
+      ? '🎧 No headphones: the drone can leak into the mic. Echo cancellation is on to remove it, but headphones are best' + (droneMode === 'sapa' ? ', and with Sa + low Pa it is easy to match the low Pa by ear.' : '.')
+      : (P.guide ? '🎧 No headphones: the mic is ignored while the guide tone plays (so it can\'t score the guide as you). Plug in headphones and tick the box to sing with it.' : '🎧 No headphones: the mic is ignored while the tuner plays a note, so its own sound is never read as your voice.');
+  }
+  document.getElementById('sa-from-held').onclick = () => {
+    const now = performance.now() / 1000, lv = hist.filter(h => h.t > now - 0.8).map(h => h.c);
+    if (lv.length < 8 || lv.some(isNaN) || Math.max(...lv) - Math.min(...lv) > 50) { status('Hold one steady note (your Sa) for about a second, then tap again.', true); return; }
+    const m = lv.slice().sort((a, b) => a - b)[lv.length >> 1], k = Math.round(m / 100);
+    st.sa = ((k - 48) % 12 + 12) % 12; st.oct = Math.max(-1, Math.min(1, Math.floor((k - 48) / 12)));
+    saSel.value = st.sa; octSel.value = st.oct; save(); buildMap(); if (droneMode) startDrone(droneMode);
+    status('Sa set to ' + KEYS[st.sa][1] + ' · ' + KEYS[st.sa][0] + ' (' + Math.round(hzOf(saCents())) + ' Hz) from your held note.');
+  };
 
   // YIN on a 16 kHz-decimated copy of the latest ~43 ms
   function yinCore(x, fs) {
@@ -268,42 +314,105 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     for (let i = 0; i < x.length; i++) { let s = 0; for (let k = 0; k < step; k++) s += buf[off + i * step + k]; x[i] = s / step; e += x[i] * x[i]; }
     const rms = Math.sqrt(e / x.length);
     const tmin = Math.floor(fs / 1000), tmax = Math.floor(fs / 70), N = x.length - tmax - 1;
-    if (N < tmax / 2 || rms < 0.006) return { rms, f: null };
+    if (N < tmax / 2 || rms < 0.006) return { rms, f: null, ap: 1 };
     const d = new Float32Array(tmax + 2); let cum = 0, best = -1;
     for (let tau = 1; tau <= tmax + 1; tau++) {
       let s = 0; for (let j = 0; j < N; j++) { const v = x[j] - x[j + tau]; s += v * v; }
       cum += s; d[tau] = cum > 0 ? s * tau / cum : 1;
     }
     for (let tau = tmin; tau < tmax; tau++) if (d[tau] < 0.15) { while (tau + 1 < tmax && d[tau + 1] < d[tau]) tau++; best = tau; break; }
-    if (best < 0 || 1 - d[best] < 0.75) return { rms, f: null };
+    let ap = 1; for (let tau = tmin; tau < tmax; tau++) if (d[tau] < ap) ap = d[tau];   // 0 = clean periodic tone, high = rough/noisy
+    if (best < 0 || 1 - d[best] < 0.75) return { rms, f: null, ap };
     const a = d[best - 1], b = d[best], c = d[best + 1], den = a - 2 * b + c;
     const tt = best + (Math.abs(den) > 1e-9 ? 0.5 * (a - c) / den : 0);
-    const f = fs / tt; return { rms, f: f >= 70 && f <= 1000 ? f : null };
+    const f = fs / tt; return { rms, f: f >= 70 && f <= 1000 ? f : null, ap: b };
+  }
+
+  // ---------- strain / effort check (a heuristic from the sound only) ----------
+  function bright() {             // alpha ratio: energy 1-5 kHz vs 50 Hz-1 kHz, in dB (higher = brighter/pressed)
+    an.getFloatFrequencyData(fbuf);
+    const bin = ctx.sampleRate / an.fftSize; let lo = 0, hi = 0;
+    for (let i = Math.ceil(50 / bin); i < Math.min(fbuf.length, 5000 / bin); i++) { const pw = Math.pow(10, fbuf[i] / 10); if (i * bin < 1000) lo += pw; else hi += pw; }
+    return lo > 0 && hi > 0 ? 10 * Math.log10(hi / lo) : NaN;
+  }
+  const brBase = [], dbBase = [];        // this session's own voice, as the baseline
+  const SL = { lvl: -1, until: 0, msg: '' };
+  function strainTick(now, paused) {
+    const el = document.getElementById('hud-strain');
+    if (paused || !running) { el.textContent = ''; el.className = 'hud-strain'; return; }
+    const w = hist.filter(h => h.t > now - 1.5), V = w.filter(h => !isNaN(h.c));
+    const cur = hist[hist.length - 1];
+    if (!isNaN(cur.c)) { if (!isNaN(cur.br)) { brBase.push(cur.br); if (brBase.length > 1500) brBase.shift(); } dbBase.push(cur.db); if (dbBase.length > 1500) dbBase.shift(); }
+    let lvl = -1; const why = [];
+    if (V.length >= 20) {
+      lvl = 0;
+      // 1. cracks: sudden jumps between neighbouring voiced frames, or the voice cutting out mid-phrase while still loud
+      let cracks = 0, drops = 0;
+      // cracks: the raw pitch leaps 3.5+ semitones within ~70 ms and snaps back within ~0.35 s (a real note change stays put)
+      for (let i = 0; i < w.length; i++) {
+        const p = w[i]; if (isNaN(p.rc)) continue;
+        let q = -1; for (let k = i + 1; k < w.length && w[k].t - p.t < 0.07; k++) if (!isNaN(w[k].rc) && Math.abs(w[k].rc - p.rc) > 350) { q = k; break; }
+        if (q < 0) continue;
+        for (let k = q + 1; k < w.length && w[k].t - w[q].t < 0.35; k++) if (!isNaN(w[k].rc) && Math.abs(w[k].rc - p.rc) < 80) { cracks++; i = k; break; }
+      }
+      for (let i = 1; i < w.length - 1; i++) {
+        if (isNaN(w[i].c) && !isNaN(w[i - 1].c) && w[i].db > -38) { let j = i; while (j < w.length && isNaN(w[j].c)) j++; if (j < w.length && w[j].t - w[i].t < 0.06 && Math.abs(w[j].c - w[i - 1].c) < 150) drops++; i = j; }
+      }
+      // 2. roughness: how far each voiced frame is from a clean, periodic tone
+      const aps = V.map(h => h.ap).sort((a, b) => a - b), apMed = aps[aps.length >> 1];
+      // 3. shake: frame-to-frame wobble left after removing the smooth line (vibrato and glides stay out)
+      const res = [];
+      for (let i = 1; i < w.length - 1; i++) { const a = w[i - 1].c, b = w[i].c, c = w[i + 1].c; if (!isNaN(a) && !isNaN(b) && !isNaN(c) && Math.abs(c - a) < 80) res.push(b - (a + c) / 2); }
+      const shake = res.length > 10 ? Math.sqrt(res.reduce((s2, v) => s2 + v * v, 0) / res.length) : 0;
+      // 4. pushing: clearly louder AND brighter than your own usual, on the upper notes
+      const rel = V[V.length - 1].c - saCents();
+      const brNow = V.map(h => h.br).filter(v => !isNaN(v)), dbNow = V.map(h => h.db);
+      const pct = (arr, q) => { const t = arr.slice().sort((a, b) => a - b); return t[Math.floor((t.length - 1) * q)]; };
+      const push = brBase.length > 200 && brNow.length > 5 && rel > 600 && pct(brNow, .5) > pct(brBase, .5) + 5 && pct(dbNow, .5) > pct(dbBase, .8);
+      if (cracks >= 1) { lvl = 2; why.push('voice cracked'); }
+      if (drops >= 3) { lvl = Math.max(lvl, 1); why.push('voice breaking up'); }
+      if (apMed > 0.16) { lvl = Math.max(lvl, 2); why.push('rough / pressed tone'); } else if (apMed > 0.10) { lvl = Math.max(lvl, 1); why.push('tone getting rough'); }
+      if (shake > 22) { lvl = Math.max(lvl, 2); why.push('note shaking'); } else if (shake > 13) { lvl = Math.max(lvl, 1); why.push('note wobbling'); }
+      if (push) { lvl = Math.max(lvl, 1); why.push('pushing louder on top'); if (apMed > 0.10) lvl = 2; }
+    }
+    // hold a warning on screen for 2 s so it can be read
+    if (lvl >= SL.lvl || now > SL.until) {
+      SL.lvl = lvl; SL.until = now + (lvl > 0 ? 2 : 0);
+      SL.msg = lvl < 0 ? '' : lvl === 0 ? '✓ Easy voice, no strain heard'
+        : lvl === 1 ? '⚠ Effort: ' + why[0] + '. Lighten: less breath push, loose jaw.'
+        : '✕ Strain: ' + why[0] + '. Stop, reset on a soft "ng" hum, try lighter.';
+      el.textContent = SL.msg; el.className = 'hud-strain ' + (lvl === 0 ? 'ok' : lvl === 1 ? 'warn' : lvl === 2 ? 'bad' : '');
+    }
   }
 
   // ---------- display ----------
   const hist = [];               // {t, c (cents or NaN), db}
   const recent = [];             // last few cents for smoothing
+  window.__riyaz = { hist };     // for testing in the browser console
   const cv = document.getElementById('trail');
   let lastDraw = 0;
   function loop() {
     if (!running) return;
-    const now = performance.now() / 1000, r = detect();
-    let c = NaN;
+    const now = performance.now() / 1000, paused = micPaused(), r = paused ? { rms: 0, f: null, ap: 1 } : detect();
+    let c = NaN, rc = NaN;
+    if ((frameN++ & 3) === 0) updateLeak();
     if (r.f) {
-      let cc = centsOf(r.f);
+      let cc = centsOf(r.f); rc = cc;
       if (recent.length) { const m = recent[recent.length - 1], k = Math.round((cc - m) / 1200); if (k && Math.abs(cc - k * 1200 - m) < 150) cc -= k * 1200; }
       recent.push(cc); if (recent.length > 5) recent.shift();
       const s = recent.slice().sort((p, q) => p - q); c = s[Math.floor(s.length / 2)];
     } else recent.length = 0;
     live.c = c; live.t = now;
-    hist.push({ t: now, c, db: 20 * Math.log10(r.rms + 1e-9) });
+    hist.push({ t: now, c, rc, db: 20 * Math.log10(r.rms + 1e-9), ap: r.ap, br: (!paused && r.rms > 0.01 && (frameN & 1)) ? bright() : NaN });
+    strainTick(now, paused);
     while (hist.length && hist[0].t < now - 10) hist.shift();
     show(c, now);
     if (now - lastDraw > 1 / 30) { draw(now); lastDraw = now; }
     requestAnimationFrame(loop);
   }
+  let hintAt = 0;
   function show(c, now) {
+    if (now - hintAt > 6) document.getElementById('sa-hint').textContent = '';
     const swEl = document.getElementById('swar'), cEl = document.getElementById('cents'), pin = document.getElementById('pin');
     if (isNaN(c)) { cEl.textContent = ''; pin.style.opacity = .25; mapUpdate(NaN); hudUpdate(NaN); return; }
     mapUpdate(c - saCents()); hudUpdate(c - saCents(), c);
@@ -323,6 +432,11 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       const mm = lv.slice().sort((p, q) => p - q)[Math.floor(lv.length / 2)], s3 = swarOf(mm - saCents());
       document.getElementById('held').textContent = s3.ro + ' ' + (s3.err >= 0 ? '+' : '') + Math.round(s3.err) + '¢';
       mapLanding(mm - saCents(), s3, now);
+      const hint = document.getElementById('sa-hint'), relm = mm - saCents();
+      const noSa = landings.slice(-6).every(l => !/S/.test(l.name));
+      if (s3.idx === 7 && noSa && relm < 0) { hint.textContent = 'You\'re holding low Pa (' + Math.round(hzOf(mm)) + ' Hz), a fifth below your Sa (' + Math.round(hzOf(saCents())) + ' Hz). Easy to land on by ear, especially with the Sa + low Pa drone. Aiming for Sa? Go up 5 notes. Is this really your Sa? Tap "Use my held note as Sa".'; hintAt = now; }
+      else if (s3.idx === 7 && noSa) { hint.textContent = 'Holding Pa, a fifth above Sa. If you meant Sa, come down 7 notes; if this is your Sa, tap "Use my held note as Sa".'; hintAt = now; }
+      else if (s3.idx === 0) { hint.textContent = ''; }
     }
   }
   // ---------- voice map: body zones + swar ladder + landing marks ----------
@@ -432,7 +546,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   function zoneOf(rel) { return ZONES.find(z => rel >= z.from && rel < z.to) || (rel < 0 ? ZONES[0] : ZONES[ZONES.length - 1]); }
   function hudUpdate(rel, c) {
     const sEl = document.getElementById('hud-swar'), cEl = document.getElementById('hud-cents');
-    if (isNaN(rel)) { Object.values(zoneEls).forEach(z => z.setAttribute('opacity', 0.08)); cEl.textContent = ''; sEl.style.opacity = .4; return; }
+    if (isNaN(rel)) { Object.values(zoneEls).forEach(z => z.setAttribute('opacity', 0.08)); cEl.textContent = ''; sEl.style.opacity = .4; if (running && micPaused()) document.getElementById('hud-zone').textContent = 'Mic paused while the tuner plays (no headphones)'; return; }
     ZONES.forEach(z => { const d = rel < z.from ? z.from - rel : rel > z.to ? rel - z.to : 0; zoneEls[z.id].setAttribute('opacity', Math.max(0.08, 0.9 - d / 120)); });
     const sw = swarOf(rel), dev = Math.round(sw.err), a = Math.abs(dev);
     sEl.style.opacity = 1; sEl.textContent = sw.dv; const ro = document.createElement('span'); ro.className = 'ro'; ro.textContent = sw.ro; sEl.appendChild(ro);
@@ -613,14 +727,14 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     if (!P.path) setPath(genPath(+$('p-level').value));
     ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume();
     const first = P.path.notes.length ? P.path.notes[0].rel : P.path.c.find(v => v != null);
-    const v = voice(hzOf(saCents() + first), .12); setTimeout(() => v.stop(), 1800);
+    const v = voice(hzOf(saCents() + first), .12); noteUntil = performance.now() / 1000 + 2.1; updateLeak(); setTimeout(() => v.stop(), 1800);
   };
   function guideOn() {
     if (P.guide) return; ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
     const real = new Float32Array(16), imag = new Float32Array(16); for (let k = 1; k < 16; k++) imag[k] = 1 / Math.pow(k, 1.2);
-    const o = ctx.createOscillator(), g = ctx.createGain(); o.setPeriodicWave(ctx.createPeriodicWave(real, imag)); g.gain.value = 0; o.connect(g); g.connect(ctx.destination); o.start(); P.guide = { o, g };
+    const o = ctx.createOscillator(), g = ctx.createGain(); o.setPeriodicWave(ctx.createPeriodicWave(real, imag)); g.gain.value = 0; o.connect(g); g.connect(ctx.destination); o.start(); P.guide = { o, g }; updateLeak();
   }
-  function guideOff() { if (!P.guide) return; const { o, g } = P.guide; g.gain.setTargetAtTime(0, ctx.currentTime, .03); o.stop(ctx.currentTime + .2); P.guide = null; }
+  function guideOff() { if (!P.guide) return; const { o, g } = P.guide; g.gain.setTargetAtTime(0, ctx.currentTime, .03); o.stop(ctx.currentTime + .2); P.guide = null; updateLeak(); }
   function fitV(snap) {
     if (!P.path) return;
     const span = +$('p-zoom').value, a = Math.max(0, Math.floor((P.pt - span * 0.3) * P.path.fps)), b = Math.ceil((P.pt + span * 1.1) * P.path.fps);
@@ -637,7 +751,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       const tg = tgtAt(P.pt), you = running && now - live.t < 0.15 && !isNaN(live.c) ? live.c - saCents() : NaN;
       if (!isNaN(you)) P.trail.push({ t: P.pt, rel: you });
       if (P.trail.length > 4000) P.trail.splice(0, 1000);
-      if (P.sc && tg != null && P.pt >= 0) { P.sc.tot++; if (!isNaN(you)) { P.sc.sung++; const d = Math.abs(you - tg); if (d <= 25) P.sc.on++; if (d <= 50) P.sc.close++; } }
+      if (P.sc && tg != null && P.pt >= 0 && !micPaused()) { P.sc.tot++; if (!isNaN(you)) { P.sc.sung++; const d = Math.abs(you - tg); if (d <= 25) P.sc.on++; if (d <= 50) P.sc.close++; } }
       if (P.guide) { if (tg != null) { P.guide.o.frequency.setTargetAtTime(hzOf(saCents() + tg), ctx.currentTime, 0.015); P.guide.g.gain.setTargetAtTime(0.07, ctx.currentTime, 0.03); } else P.guide.g.gain.setTargetAtTime(0, ctx.currentTime, 0.03); }
       // live line under the canvas
       const el = $('p-live'); el.textContent = '';
@@ -683,12 +797,20 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     // the path
     g.lineCap = 'round'; g.lineJoin = 'round';
     const a = Math.max(0, Math.floor(t0 * fps)), b = Math.min(P.path.c.length - 1, Math.ceil(t1 * fps));
-    for (const pass of [0, 1]) {
-      g.lineWidth = pass ? 3 : 12; g.strokeStyle = pass ? '#efe6d4' : 'rgba(201,162,74,.28)';
-      let pen = false; g.beginPath();
-      for (let i = a; i <= b; i++) { const v = P.path.c[i]; if (v == null) { pen = false; continue; } const px = x(i / fps), py = y(v); if (!pen) { g.moveTo(px, py); pen = true; } else g.lineTo(px, py); }
-      g.stroke();
+    // ±25¢ band: a filled ribbon per sung stretch, so glides keep the same vertical tolerance
+    g.fillStyle = 'rgba(201,162,74,.20)';
+    for (let i = a; i <= b;) {
+      if (P.path.c[i] == null) { i++; continue; }
+      let j = i; while (j <= b && P.path.c[j] != null) j++;
+      g.beginPath();
+      for (let k = i; k < j; k++) { const px = x(k / fps), py = y(P.path.c[k] + 25); k === i ? g.moveTo(px, py) : g.lineTo(px, py); }
+      for (let k = j - 1; k >= i; k--) g.lineTo(x(k / fps), y(P.path.c[k] - 25));
+      g.closePath(); g.fill(); i = j;
     }
+    g.lineWidth = 1.5; g.strokeStyle = 'rgba(239,230,212,.5)';
+    { let pen = false; g.beginPath();
+      for (let i = a; i <= b; i++) { const v = P.path.c[i]; if (v == null) { pen = false; continue; } const px = x(i / fps), py = y(v); if (!pen) { g.moveTo(px, py); pen = true; } else g.lineTo(px, py); }
+      g.stroke(); }
     // note names written on the way
     for (const n of P.path.notes) {
       if (n.t + n.d < t0 || n.t > t1) continue;
@@ -701,20 +823,22 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     g.font = 'italic 11px "Mukta", sans-serif'; g.fillStyle = '#c9a24a';
     for (const m of (P.path.marks || [])) { if (m.t < t0 || m.t > t1) continue; g.fillText(m.text, x(m.t) - 16, y(m.rel) + 20); }
     // your line
-    g.lineWidth = 3.5; let pen = false, prev = null;
-    for (const p of P.trail) {
-      if (p.t < t0) continue;
-      if (prev && p.t - prev.t > 0.12) pen = false;
-      const tg = tgtAt(p.t), d = tg == null ? 999 : Math.abs(p.rel - tg);
-      g.strokeStyle = d <= 25 ? '#7fbf6a' : d <= 50 ? '#c9a24a' : '#e07a5f';
-      if (pen) { g.beginPath(); g.moveTo(x(prev.t), y(prev.rel)); g.lineTo(x(p.t), y(p.rel)); g.stroke(); }
-      pen = true; prev = p;
-    }
+    const CYAN = '#3ee6ff';
+    g.save(); g.lineWidth = 5; g.strokeStyle = CYAN; g.shadowColor = 'rgba(62,230,255,.85)'; g.shadowBlur = 12;
+    { let pen = false, prev = null; g.beginPath();
+      for (const p of P.trail) {
+        if (p.t < t0) continue;
+        if (prev && p.t - prev.t > 0.12) pen = false;
+        if (pen) g.lineTo(x(p.t), y(p.rel)); else g.moveTo(x(p.t), y(p.rel));
+        pen = true; prev = p;
+      }
+      g.stroke(); }
+    g.restore();
     // playhead, target dot and your dot
     g.strokeStyle = 'rgba(241,233,220,.5)'; g.lineWidth = 1; g.beginPath(); g.moveTo(ph, 0); g.lineTo(ph, H); g.stroke();
-    const tg = tgtAt(P.pt); if (tg != null) { g.strokeStyle = '#efe6d4'; g.lineWidth = 2; g.beginPath(); g.arc(ph, y(tg), 9, 0, 7); g.stroke(); }
+    const tg = tgtAt(P.pt); if (tg != null) { g.strokeStyle = 'rgba(239,230,212,.8)'; g.lineWidth = 1.5; g.beginPath(); g.arc(ph, y(tg), 11, 0, 7); g.stroke(); }
     const you = running && performance.now() / 1000 - live.t < 0.15 && !isNaN(live.c) ? live.c - saCents() : NaN;
-    if (!isNaN(you)) { const d = tg == null ? 999 : Math.abs(you - tg); g.fillStyle = d <= 25 ? '#7fbf6a' : d <= 50 ? '#c9a24a' : '#e07a5f'; g.beginPath(); g.arc(ph, Math.max(6, Math.min(H - 6, y(you))), 6, 0, 7); g.fill(); }
+    if (!isNaN(you)) { const yy = Math.max(8, Math.min(H - 8, y(you))); g.save(); g.shadowColor = 'rgba(62,230,255,.9)'; g.shadowBlur = 16; g.fillStyle = CYAN; g.beginPath(); g.arc(ph, yy, 8, 0, 7); g.fill(); g.restore(); g.strokeStyle = '#0b1d22'; g.lineWidth = 2; g.beginPath(); g.arc(ph, yy, 8, 0, 7); g.stroke(); }
     if (P.pt < 0) { g.fillStyle = '#f1e9dc'; g.font = '40px "Tiro Devanagari Hindi", serif'; g.textAlign = 'center'; g.fillText(String(Math.ceil(-P.pt)), ph, H / 2); g.textAlign = 'left'; }
   }
   renderSaved(); setPath(genPath(2)); requestAnimationFrame(pathFrame);
@@ -741,7 +865,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     if (mode === 'sapa') droneNodes.push(voice(sa * 0.75, .07));   // low Pa = Sa x 3/4
     renderDrone();
   }
-  function renderDrone() { document.querySelectorAll('[data-drone]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.drone === droneMode))); }
+  function renderDrone() { updateLeak(); document.querySelectorAll('[data-drone]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.drone === droneMode))); }
   document.querySelectorAll('[data-drone]').forEach(b => b.onclick = () => droneMode === b.dataset.drone ? stopDrone() : startDrone(b.dataset.drone));
 })();
 </script>
