@@ -52,6 +52,15 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
 .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr)); gap: 10px; }
 .fact { background: var(--teak-3); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
 .fact .v { font-family: var(--font-display); font-size: 1.25rem; }
+.map-wrap { position: relative; }
+#vmap { display: block; width: 100%; height: auto; max-height: 78vh; touch-action: manipulation; }
+#vmap text { font-family: var(--font-mono); }
+#vmap .dv { font-family: var(--font-display); }
+.target-line { font-size: 1.05rem; min-height: 1.5em; }
+.target-line .up, .target-line .down { color: var(--brass); font-weight: 500; }
+.target-line .on { color: var(--good); font-weight: 500; }
+.map-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btn.small { padding: 6px 12px; font-size: .9rem; }
 </style>
 </head>
 <body>
@@ -90,6 +99,20 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
     <p class="note">Green band = within 10 cents, gold = within 25. The pale line under the trail is your loudness: on the volume ladder the trail should stay flat while it rises and falls.</p>
   </section>
 
+  <section class="panel" id="map-panel">
+    <div>
+      <div class="label">Voice map</div>
+      <p class="note">Left: where each pitch is usually felt (it lights up as you sing). Right: the swar ladder from low Pa to high Pa. The gold dot is you; a rung glows green when you land on it. Each note you hold leaves a mark in the column on the far right. Tap a rung to set a target.</p>
+    </div>
+    <div class="map-wrap"><svg id="vmap" viewBox="0 0 380 540" role="img" aria-label="Voice map: body sensation zones beside a swar ladder with your live pitch"></svg></div>
+    <p class="target-line" id="target-line" aria-live="polite">Tap Sa or Pa on the ladder to set a target.</p>
+    <div class="map-actions">
+      <button class="btn small" type="button" id="clear-landings">Clear marks</button>
+      <button class="btn small" type="button" id="clear-target">Clear target</button>
+      <span class="note" id="landing-summary"></span>
+    </div>
+  </section>
+
   <section class="panel">
     <div class="row">
       <span class="label">Drone (use headphones, or the tuner hears it)</span>
@@ -113,8 +136,8 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
   KEYS.forEach(([w, h], i) => { const o = document.createElement('option'); o.value = i; o.textContent = h + ' · ' + w; saSel.appendChild(o); });
   saSel.value = st.sa; octSel.value = st.oct;
   const save = () => { try { localStorage.setItem('riyaz-tuner', JSON.stringify(st)); } catch (e) {} };
-  saSel.onchange = () => { st.sa = +saSel.value; save(); if (droneMode) startDrone(droneMode); };
-  octSel.onchange = () => { st.oct = +octSel.value; save(); if (droneMode) startDrone(droneMode); };
+  saSel.onchange = () => { st.sa = +saSel.value; save(); if (typeof buildMap === 'function') buildMap(); if (droneMode) startDrone(droneMode); };
+  octSel.onchange = () => { st.oct = +octSel.value; save(); if (typeof buildMap === 'function') buildMap(); if (droneMode) startDrone(droneMode); };
   const saCents = () => (48 + st.sa + 12 * st.oct) * 100;          // MIDI*100 (C3 = 4800)
   const centsOf = (f) => 1200 * Math.log2(f / 440) + 6900;
   const hzOf = (c) => 440 * Math.pow(2, (c - 6900) / 1200);
@@ -200,7 +223,8 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
   }
   function show(c, now) {
     const swEl = document.getElementById('swar'), cEl = document.getElementById('cents'), pin = document.getElementById('pin');
-    if (isNaN(c)) { cEl.textContent = ''; pin.style.opacity = .25; return; }
+    if (isNaN(c)) { cEl.textContent = ''; pin.style.opacity = .25; mapUpdate(NaN); return; }
+    mapUpdate(c - saCents());
     const sw = swarOf(c - saCents());
     swEl.textContent = sw.dv; const ro = document.createElement('span'); ro.className = 'ro'; ro.textContent = sw.ro; swEl.appendChild(ro);
     const dev = Math.round(sw.err), a = Math.abs(dev);
@@ -216,8 +240,123 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
     if (lv.length > 8 && lv.every(x => !isNaN(x)) && Math.max(...lv) - Math.min(...lv) < 40) {
       const mm = lv.slice().sort((p, q) => p - q)[Math.floor(lv.length / 2)], s3 = swarOf(mm - saCents());
       document.getElementById('held').textContent = s3.ro + ' ' + (s3.err >= 0 ? '+' : '') + Math.round(s3.err) + '¢';
+      mapLanding(mm - saCents(), s3, now);
     }
   }
+  // ---------- voice map: body zones + swar ladder + landing marks ----------
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const MAP = { lo: -550, hi: 1950, top: 22, bottom: 520, lx0: 196, lx1: 318, landX: 330 };
+  const yOf = (rel) => MAP.bottom - (Math.max(MAP.lo, Math.min(MAP.hi, rel)) - MAP.lo) / (MAP.hi - MAP.lo) * (MAP.bottom - MAP.top);
+  // zones in cents from Sa (a guide for a voice singing around this Sa; everyone feels it a little differently)
+  const ZONES = [
+    { id: 'chest', from: -600, to: -50, label: 'chest', cx: 70, cy: 330, r: 34, col: '#c9a24a' },
+    { id: 'mouth', from: -50, to: 450, label: 'chest + mouth', cx: 70, cy: 158, r: 13, col: '#d9a85a' },
+    { id: 'mask', from: 450, to: 750, label: 'mask: cheeks, nose', cx: 70, cy: 136, r: 15, col: '#e0b46a' },
+    { id: 'forehead', from: 750, to: 1150, label: 'forehead · lighten', cx: 70, cy: 98, r: 15, col: '#e6c07a' },
+    { id: 'head', from: 1150, to: 2100, label: 'head', cx: 70, cy: 74, r: 13, col: '#efe6d4' },
+  ];
+  let target = null, landings = [], lastHeld = { ro: null, t: -9 };
+  const mk = (tag, attrs, parent) => { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+  const svg = document.getElementById('vmap');
+  let marker, markerLine, zoneEls = {}, rungEls = {}, landG, targetEl;
+  function buildMap() {
+    svg.innerHTML = '';
+    // body outline
+    const body = mk('g', { fill: 'none', stroke: '#8a6f33', 'stroke-width': 1.5 }, svg);
+    mk('ellipse', { cx: 70, cy: 118, rx: 40, ry: 52 }, body);
+    mk('path', { d: 'M56 168 L56 196 M84 168 L84 196' }, body);
+    mk('path', { d: 'M6 300 Q14 214 56 200 L84 200 Q126 214 134 300 L134 420 M6 300 L6 420' }, body);
+    mk('path', { d: 'M54 124 Q60 130 66 124 M74 124 Q80 130 86 124', 'stroke-width': 1 }, body);   // closed eyes
+    mk('path', { d: 'M62 156 Q70 162 78 156', 'stroke-width': 1 }, body);                            // mouth
+    ZONES.forEach(z => {
+      const g = mk('circle', { cx: z.cx, cy: z.cy, r: z.r, fill: z.col, opacity: 0.08 }, svg);
+      zoneEls[z.id] = g;
+    });
+    // zone bands behind the ladder
+    ZONES.forEach(z => {
+      const y1 = yOf(Math.min(z.to, MAP.hi)), y2 = yOf(Math.max(z.from, MAP.lo));
+      if (y2 <= y1) return;
+      mk('rect', { x: MAP.lx0, y: y1, width: MAP.lx1 - MAP.lx0, height: y2 - y1, fill: z.col, opacity: 0.06 }, svg);
+      const t = mk('text', { x: MAP.lx1 - 3, y: (y1 + y2) / 2 + 3, 'text-anchor': 'end', 'font-size': 9, fill: '#b5a696' }, svg); t.textContent = z.label;
+      mk('line', { x1: 112, y1: z.cy, x2: MAP.lx0 - 2, y2: (y1 + y2) / 2, stroke: z.col, 'stroke-width': 0.6, opacity: 0.35, 'stroke-dasharray': '2 3' }, svg);
+    });
+    // rungs
+    rungEls = {};
+    for (let k = Math.ceil(MAP.lo / 100); k <= Math.floor(MAP.hi / 100); k++) {
+      const rel = k * 100, sw = swarOf(rel), y = yOf(rel);
+      const strong = sw.idx === 0 || sw.idx === 7, shuddha = [0, 2, 4, 5, 7, 9, 11].includes(sw.idx);
+      const ln = mk('line', { x1: MAP.lx0, y1: y, x2: MAP.lx1, y2: y, stroke: strong ? '#c9a24a' : shuddha ? '#8a7a68' : '#4a382d', 'stroke-width': strong ? 2.2 : shuddha ? 1 : 0.8, 'stroke-dasharray': shuddha ? '' : '3 3' }, svg);
+      rungEls[k] = { ln, strong, shuddha };
+      if (shuddha) {
+        const lab = mk('text', { x: MAP.lx0 - 6, y: y + 4, 'text-anchor': 'end', 'font-size': strong ? 15 : 11, fill: strong ? '#f1e9dc' : '#b5a696', class: strong ? 'dv' : '' }, svg);
+        lab.textContent = strong ? sw.dv + ' ' + sw.ro : sw.ro;
+      }
+      if (strong) { const hz = mk('text', { x: MAP.lx0 + 4, y: y - 4, 'font-size': 8, fill: '#b5a696' }, svg); hz.textContent = Math.round(hzOf(saCents() + rel)) + ' Hz'; }
+      // tap target (full rung height band)
+      const hit = mk('rect', { x: MAP.lx0 - 46, y: y - 6, width: MAP.lx1 - MAP.lx0 + 46, height: 12, fill: 'transparent', style: 'cursor:pointer' }, svg);
+      hit.addEventListener('click', () => { target = rel; drawTarget(); });
+    }
+    mk('text', { x: MAP.landX + 22, y: 14, 'text-anchor': 'middle', 'font-size': 8, fill: '#b5a696' }, svg).textContent = 'held';
+    targetEl = mk('line', { x1: MAP.lx0, x2: MAP.lx1, y1: -10, y2: -10, stroke: '#7fbf6a', 'stroke-width': 2, 'stroke-dasharray': '6 4', opacity: 0 }, svg);
+    landG = mk('g', {}, svg);
+    markerLine = mk('line', { x1: MAP.lx0, x2: MAP.lx1, y1: -10, y2: -10, stroke: '#c9a24a', 'stroke-width': 1, opacity: 0 }, svg);
+    marker = mk('circle', { cx: (MAP.lx0 + MAP.lx1) / 2, cy: -10, r: 8, fill: '#c9a24a', stroke: '#1d1512', 'stroke-width': 2, opacity: 0 }, svg);
+    drawTarget(); drawLandings();
+  }
+  function drawTarget() {
+    const tl = document.getElementById('target-line');
+    if (target == null) { targetEl.setAttribute('opacity', 0); tl.textContent = 'Tap Sa or Pa on the ladder to set a target.'; return; }
+    targetEl.setAttribute('y1', yOf(target)); targetEl.setAttribute('y2', yOf(target)); targetEl.setAttribute('opacity', 0.9);
+    tl.textContent = 'Target: ' + swarOf(target).name + '. Sing and follow the arrow.';
+  }
+  function mapUpdate(rel) {
+    if (!marker) return;
+    if (isNaN(rel)) { marker.setAttribute('opacity', 0.25); markerLine.setAttribute('opacity', 0); Object.values(zoneEls).forEach(z => z.setAttribute('opacity', 0.08)); return; }
+    const y = yOf(rel), sw = swarOf(rel), e = Math.abs(sw.err), k = Math.round(rel / 100);
+    marker.setAttribute('cy', y); marker.setAttribute('opacity', 1);
+    marker.setAttribute('fill', e <= 10 ? '#7fbf6a' : e <= 25 ? '#c9a24a' : '#e07a5f');
+    markerLine.setAttribute('y1', y); markerLine.setAttribute('y2', y); markerLine.setAttribute('opacity', 0.5);
+    Object.entries(rungEls).forEach(([kk, r]) => {
+      const on = +kk === k && e <= 10;
+      r.ln.setAttribute('stroke', on ? '#7fbf6a' : r.strong ? '#c9a24a' : r.shuddha ? '#8a7a68' : '#4a382d');
+      r.ln.setAttribute('stroke-width', on ? 4 : r.strong ? 2.2 : r.shuddha ? 1 : 0.8);
+    });
+    ZONES.forEach(z => {
+      // soft glow: full in its zone, fading over 100 cents into neighbours
+      const d = rel < z.from ? z.from - rel : rel > z.to ? rel - z.to : 0;
+      zoneEls[z.id].setAttribute('opacity', Math.max(0.08, 0.85 - d / 120));
+    });
+    if (target != null) {
+      const diff = Math.round(rel - target), tl = document.getElementById('target-line'); tl.textContent = '';
+      const s = document.createElement('span');
+      if (Math.abs(diff) <= 10) { s.className = 'on'; s.textContent = '✓ On ' + swarOf(target).name + ' (' + (diff >= 0 ? '+' : '') + diff + '¢)'; }
+      else if (Math.abs(diff) >= 150) { s.className = diff < 0 ? 'up' : 'down'; s.textContent = (diff < 0 ? '↑ go up' : '↓ come down') + ' about ' + Math.round(Math.abs(diff) / 100) + ' semitones to ' + swarOf(target).name; }
+      else if (diff < 0) { s.className = 'up'; s.textContent = '↑ ' + Math.abs(diff) + '¢ below ' + swarOf(target).name + ', go up'; }
+      else { s.className = 'down'; s.textContent = '↓ ' + diff + '¢ above ' + swarOf(target).name + ', come down'; }
+      tl.appendChild(s);
+    }
+  }
+  function mapLanding(rel, sw, now) {
+    if (sw.ro === lastHeld.ro && now - lastHeld.t < 0.8) { lastHeld.t = now; return; }
+    lastHeld = { ro: sw.ro, t: now };
+    landings.push({ rel, err: sw.err, name: sw.ro }); if (landings.length > 60) landings.shift();
+    drawLandings();
+  }
+  function drawLandings() {
+    if (!landG) return;
+    landG.innerHTML = '';
+    landings.forEach((l, i) => {
+      const e = Math.abs(l.err);
+      mk('circle', { cx: MAP.landX + 6 + (i % 5) * 9, cy: yOf(l.rel), r: 3.6, fill: e <= 10 ? '#7fbf6a' : e <= 25 ? '#c9a24a' : '#e07a5f', opacity: 0.9 }, landG);
+    });
+    const by = {}; landings.forEach(l => { (by[l.name] = by[l.name] || []).push(l.err); });
+    const parts = Object.entries(by).filter(([, v]) => v.length >= 2).map(([n, v]) => { const a = Math.round(v.reduce((x, y) => x + y, 0) / v.length); return n + ' ' + (a >= 0 ? '+' : '') + a + '¢ avg'; });
+    document.getElementById('landing-summary').textContent = parts.length ? parts.join(' · ') : '';
+  }
+  document.getElementById('clear-landings').onclick = () => { landings = []; drawLandings(); };
+  document.getElementById('clear-target').onclick = () => { target = null; drawTarget(); };
+  buildMap();
+
   function draw(now) {
     const Wd = cv.clientWidth, H = 260, dpr = window.devicePixelRatio || 1;
     if (cv.width !== Math.round(Wd * dpr)) { cv.width = Math.round(Wd * dpr); cv.height = H * dpr; }
