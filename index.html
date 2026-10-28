@@ -184,6 +184,8 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     <div class="row">
       <button class="btn primary" id="p-go" type="button">▶ Start</button>
       <button class="btn" id="p-restart" type="button">⟲ Restart</button>
+      <button class="btn" id="p-demo" type="button" title="Hear the path sung, then sing it yourself">🎧 Demo: hear it sung</button>
+      <div class="field"><label class="label" for="p-words">Demo sings</label><select id="p-words"><option value="sargam" selected>Sargam (Sa Re Ga)</option><option value="aakar">Aakar ("aa")</option></select></div>
       <div class="field"><label class="label" for="p-speed">Speed</label><select id="p-speed"><option value="0.5">0.5× slow</option><option value="0.75">0.75×</option><option value="1" selected>1×</option></select></div>
       <div class="field"><label class="label" for="p-zoom">Zoom</label><select id="p-zoom"><option value="4">Close · 4 s</option><option value="7" selected>Normal · 7 s</option><option value="12">Wide · 12 s</option></select></div>
     </div>
@@ -316,15 +318,15 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     } catch (e) {}
   }
   let noteUntil = 0;                                  // 'Play starting note' end time
-  const tunerSounding = () => !!droneMode || !!P.guide || performance.now() / 1000 < noteUntil;
-  const micPaused = () => !st.hp && (!!P.guide || performance.now() / 1000 < noteUntil);
+  const tunerSounding = () => !!droneMode || !!P.guide || !!(typeof DEMO !== 'undefined' && DEMO.S) || performance.now() / 1000 < noteUntil;
+  const micPaused = () => !st.hp && (!!P.guide || !!(typeof DEMO !== 'undefined' && DEMO.S) || performance.now() / 1000 < noteUntil);
   function updateLeak() {
     const el = document.getElementById('leak');
     if (st.hp || !tunerSounding()) { el.hidden = true; return; }
     el.hidden = false;
     el.textContent = droneMode
       ? '🎧 No headphones: the drone can leak into the mic. Echo cancellation is on to remove it, but headphones are best' + (droneMode === 'sapa' ? ', and with Sa + low Pa it is easy to match the low Pa by ear.' : '.')
-      : (P.guide ? '🎧 No headphones: the mic is ignored while the guide tone plays (so it can\'t score the guide as you). Plug in headphones and tick the box to sing with it.' : '🎧 No headphones: the mic is ignored while the tuner plays a note, so its own sound is never read as your voice.');
+      : ((typeof DEMO !== 'undefined' && DEMO.S) ? '🎧 No headphones: the mic is ignored while the demo sings, so it isn\'t scored as you.' : P.guide ? '🎧 No headphones: the mic is ignored while the guide tone plays (so it can\'t score the guide as you). Plug in headphones and tick the box to sing with it.' : '🎧 No headphones: the mic is ignored while the tuner plays a note, so its own sound is never read as your voice.');
   }
   document.getElementById('sa-from-held').onclick = () => {
     const now = performance.now() / 1000, lv = hist.filter(h => h.t > now - 0.8).map(h => h.c);
@@ -849,6 +851,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   // transport
   $('p-go').onclick = async () => {
     if (!P.path) setPath(genPath(+$('p-level').value));
+    if (P.demo) { P.demo = false; demoStop(); P.playing = false; $('p-demo').textContent = '🎧 Demo: hear it sung'; seekTo(-2); }
     if (P.playing) { P.playing = false; $('p-go').textContent = '▶ Start'; guideOff(); return; }
     if (!running) await start();
     if (P.pt >= dur()) { seekTo(-2); P.trail = []; }
@@ -856,8 +859,8 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     P.playing = true; P.last = performance.now() / 1000; $('p-go').textContent = '❚❚ Pause'; $('p-score').textContent = '';
     if ($('p-guide').checked) guideOn();
   };
-  $('p-restart').onclick = () => { seekTo(-2); P.trail = []; P.sc = P.playing ? { tot: 0, sung: 0, on: 0, close: 0 } : null; $('p-score').textContent = ''; };
-  $('p-seek').oninput = () => { seekTo(+$('p-seek').value / 100 * dur()); P.trail = []; P.sc = null; };
+  $('p-restart').onclick = () => { seekTo(P.demo ? -1 : -2); demoRestart(); P.trail = []; P.sc = P.playing ? { tot: 0, sung: 0, on: 0, close: 0 } : null; $('p-score').textContent = ''; };
+  $('p-seek').oninput = () => { seekTo(+$('p-seek').value / 100 * dur()); P.trail = []; P.sc = null; clearTimeout(P.seekT); P.seekT = setTimeout(demoRestart, 120); };
   $('p-guide').onchange = () => { if ($('p-guide').checked && P.playing) guideOn(); else guideOff(); };
   $('p-zoom').onchange = () => fitV(true);
   $('p-first').onclick = () => {
@@ -872,6 +875,118 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     const o = ctx.createOscillator(), g = ctx.createGain(); o.setPeriodicWave(ctx.createPeriodicWave(real, imag)); g.gain.value = 0; o.connect(g); g.connect(ctx.destination); o.start(); P.guide = { o, g }; updateLeak();
   }
   function guideOff() { if (!P.guide) return; const { o, g } = P.guide; g.gain.setTargetAtTime(0, ctx.currentTime, .03); o.stop(ctx.currentTime + .2); P.guide = null; updateLeak(); }
+
+  // ---------- demo singer: a voice modelled on Yash's measured singing (no recording needed) ----------
+  // Numbers from his Oct 2026 clips: Sa F#3 (185 Hz, taken from the Sa setting so it sings in your key), clarity CPP 4.2 dB and
+  // HNR 10.6 dB (a little breathy), pitch flutter about 2.5 cents, "ring" about -24 dB (modest), relaxed natural vibrato on
+  // long notes, smooth meends. Vowel formants are typical adult-male values. Swap these for a profile measured from a clip later.
+  const MYVOICE = {
+    tilt: 1.15,          // source roll-off per harmonic (higher = darker)
+    breath: 0.10,        // air noise mixed in (HNR ~10 dB)
+    flutter: 2.5,        // cents of slow random pitch drift
+    vibRate: 5.2, vibDepth: 16, vibAfter: 0.45,   // Hz, cents, seconds into a steady hold
+    ring: 0.12,          // singer's-formant level (~-24 dB re F1 after the tilt)
+    vowels: { a: [730, 1090, 2440, 3000, 3700], e: [440, 1800, 2500, 3000, 3700], i: [290, 2200, 2900, 3150, 3800], u: [320, 870, 2300, 3000, 3700] },
+    bw: [90, 110, 160, 200, 250], fgain: [1, 0.55, 0.24, 0.12, 0.05],
+  };
+  const SYL = [['s', 'a'], ['r', 'e'], ['r', 'e'], ['g', 'a'], ['g', 'a'], ['m', 'a'], ['m', 'a'], ['p', 'a'], ['d', 'a'], ['d', 'a'], ['n', 'i'], ['n', 'i']];
+  let noiseBuf = null;
+  function makeSinger(ac, vol) {
+    const V = MYVOICE;
+    if (!noiseBuf || noiseBuf.sampleRate !== ac.sampleRate) { noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+    const comp = ac.createDynamicsCompressor(), master = ac.createGain(); master.gain.value = vol; comp.connect(master); master.connect(ac.destination);
+    const env = ac.createGain(); env.gain.value = 0; env.connect(comp);
+    const n = 48, re = new Float32Array(n), im = new Float32Array(n); for (let k = 1; k < n; k++) im[k] = 1 / Math.pow(k, V.tilt);
+    const osc = ac.createOscillator(); osc.setPeriodicWave(ac.createPeriodicWave(re, im)); osc.frequency.value = 185;
+    const lfo = ac.createOscillator(), lfoG = ac.createGain(); lfo.frequency.value = V.vibRate; lfoG.gain.value = 0; lfo.connect(lfoG); lfoG.connect(osc.detune);
+    const src = ac.createGain(); osc.connect(src);
+    const nz = ac.createBufferSource(); nz.buffer = noiseBuf; nz.loop = true;
+    const nzHp = ac.createBiquadFilter(); nzHp.type = 'highpass'; nzHp.frequency.value = 900; const nzG = ac.createGain(); nzG.gain.value = V.breath;
+    nz.connect(nzHp); nzHp.connect(nzG); nzG.connect(src);                     // breath goes through the vowel filters too
+    const F = V.vowels.a.map((f, i) => { const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = f / V.bw[i]; const g = ac.createGain(); g.gain.value = i === 3 ? V.ring : V.fgain[i]; src.connect(bp); bp.connect(g); g.connect(env); return bp; });
+    const low = ac.createBiquadFilter(); low.type = 'lowpass'; low.frequency.value = 400; const lowG = ac.createGain(); lowG.gain.value = 0.35; src.connect(low); low.connect(lowG); lowG.connect(env);   // chest body
+    const cBp = ac.createBiquadFilter(); cBp.type = 'bandpass'; cBp.Q.value = 1.2; const cG = ac.createGain(); cG.gain.value = 0; nz.connect(cBp); cBp.connect(cG); cG.connect(comp);   // consonant noise
+    osc.start(); lfo.start(); nz.start();
+    const S = {
+      ac, env, osc, lfoG, F, cBp, cG,
+      vowel(v, t) { V.vowels[v].forEach((f, i) => F[i].frequency.setTargetAtTime(f, t, 0.025)); },
+      consonant(c, t, rate) {          // t = moment the vowel starts; consonant sits just before it
+        const L = (x) => x / Math.max(0.6, rate);  // stretch a little at slow speed
+        const dip = (lvl, d) => { env.gain.setTargetAtTime(lvl, t - L(d), 0.008); env.gain.setTargetAtTime(1, t, 0.015); };
+        const burst = (f, d, a) => { cBp.frequency.setValueAtTime(f, t - L(d)); cG.gain.setTargetAtTime(a, t - L(d), 0.004); cG.gain.setTargetAtTime(0, t - 0.005, 0.01); };
+        if (c === 's') { dip(0, 0.09); burst(5200, 0.085, 0.22); }
+        else if (c === 'r') { dip(0.3, 0.035); }
+        else if (c === 'g') { dip(0.04, 0.055); burst(1700, 0.018, 0.12); }
+        else if (c === 'd') { dip(0.04, 0.055); burst(3000, 0.02, 0.13); }
+        else if (c === 'p') { dip(0, 0.065); burst(900, 0.02, 0.16); }
+        else if (c === 'm' || c === 'n') { dip(0.4, 0.07); const f2 = c === 'm' ? 1000 : 1600; F[0].frequency.setTargetAtTime(260, t - L(0.07), 0.01); F[1].frequency.setTargetAtTime(f2, t - L(0.07), 0.01); }
+      },
+      stop(t) { env.gain.cancelScheduledValues(t); env.gain.setTargetAtTime(0, t, 0.03); cG.gain.cancelScheduledValues(t); cG.gain.setValueAtTime(0, t); [osc, lfo, nz].forEach(o => { try { o.stop(t + 0.2); } catch (e) {} }); setTimeout(() => { try { master.disconnect(); } catch (e) {} }, 600); },
+    };
+    return S;
+  }
+  // schedule the whole path from position fromT (s) at speed, starting at audio time t0
+  function scheduleSing(S, path, fromT, speed, t0, sa, words) {
+    const fps = path.fps, c = path.c, V = MYVOICE, at = (i) => t0 + (i / fps - fromT) / speed;
+    let on = false, steady = 0, vib = 0;
+    const onsets = new Map();
+    for (const nt of path.notes) {
+      if (nt.small) continue;
+      const i = Math.round(nt.t * fps), prev = c[Math.max(0, i - Math.round(0.16 * fps))];
+      onsets.set(i, prev == null || Math.abs(prev - nt.rel) > 60 && Math.abs(c[Math.max(0, i - Math.round(0.4 * fps))] - nt.rel) > 60 ? 'new' : 'legato');
+    }
+    // a note reached by a slow meend is sung legato (no consonant), like a real singer
+    for (const nt of path.notes) { if (nt.small) continue; const i = Math.round(nt.t * fps); let k = i - 1; while (k > 0 && c[k] != null && Math.abs(c[k] - c[k - 1]) > 0.5) k--; if (i - k > 0.25 * fps && c[k] != null) onsets.set(i, 'legato'); }
+    const startI = Math.max(0, Math.ceil(fromT * fps));
+    for (let i = startI; i < c.length; i++) {
+      const t = at(i), v = c[i];
+      if (t < S.ac.currentTime) continue;
+      if (v == null) { if (on) { S.env.gain.setTargetAtTime(0, t, 0.05); on = false; } steady = 0; continue; }
+      const hz = 440 * Math.pow(2, (sa + v - 6900) / 1200);
+      if (!on) { S.osc.frequency.setValueAtTime(hz, Math.max(S.ac.currentTime, t - 0.02)); S.env.gain.setTargetAtTime(1, t, 0.04); on = true; }
+      else S.osc.frequency.setTargetAtTime(hz, t, 0.012);
+      // natural vibrato fades in on steady holds (paths with written vibrato already wobble, so this stays off there)
+      const back = c[i - Math.round(0.2 * fps)];
+      steady = back != null && Math.abs(v - back) < 10 ? steady + 1 / fps : 0;
+      const want = Math.max(0, Math.min(V.vibDepth, (steady - V.vibAfter) * 45));
+      if (Math.abs(want - vib) > 1 || (want === 0 && vib)) { S.lfoG.gain.setTargetAtTime(want, t, 0.08); vib = want; }
+      if (i % 4 === 0) S.osc.detune.setTargetAtTime((Math.random() * 2 - 1) * V.flutter, t, 0.06);
+      const kind = onsets.get(i);
+      if (kind) {
+        const sw = swarOf(v), [cons, vow] = SYL[sw.idx];
+        if (words === 'sargam') { S.vowel(vow, t - 0.02); if (kind === 'new' && i > startI) S.consonant(cons, t, speed); }
+        else { S.vowel('a', t); if (kind === 'new' && i > startI) { S.env.gain.setTargetAtTime(0.55, t - 0.04, 0.01); S.env.gain.setTargetAtTime(1, t, 0.02); } }
+      }
+    }
+    const end = at(c.length); S.env.gain.setTargetAtTime(0, end, 0.08);
+    return end;
+  }
+  var DEMO = { S: null };          // var: read (via typeof) by mic helpers defined earlier
+  function demoStop() { if (DEMO.S) { DEMO.S.stop(ctx.currentTime); DEMO.S = null; updateLeak(); } }
+  function demoStart() {
+    demoStop(); ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume(); setSession(running ? 'play-and-record' : 'playback');
+    DEMO.S = makeSinger(ctx, Math.max(0.5, (+st.dvol || 0.18) * 4));
+    scheduleSing(DEMO.S, P.path, P.pt, +$('p-speed').value, ctx.currentTime + 0.05, saCents(), $('p-words').value);
+    updateLeak();
+  }
+  $('p-demo').onclick = () => {
+    if (!P.path) setPath(genPath(+$('p-level').value));
+    if (P.demo && P.playing) { P.playing = false; P.demo = false; demoStop(); $('p-demo').textContent = '🎧 Demo: hear it sung'; return; }
+    if (P.playing) { P.playing = false; guideOff(); $('p-go').textContent = '▶ Start'; }
+    if (P.pt >= dur() || P.pt <= 0) seekTo(-1);
+    P.trail = []; P.sc = null; P.demo = true; P.playing = true; P.last = performance.now() / 1000;
+    $('p-demo').textContent = '❚❚ Stop demo'; $('p-score').textContent = 'Demo: listen, follow the line with your eyes, then press Start and sing it.';
+    demoStart();
+  };
+  const demoRestart = () => { if (P.demo && P.playing) demoStart(); };
+  $('p-speed').addEventListener('change', demoRestart); $('p-words').addEventListener('change', demoRestart);
+  // offline render, for testing and later for 'download the demo'
+  window.__riyaz.path = () => P.path;
+  window.__riyaz.renderDemo = async (rate = 1) => {
+    const sr = 48000, len = dur() / rate + 0.6, ac = new OfflineAudioContext(1, Math.ceil(sr * len), sr);
+    const S = makeSinger(ac, 0.8); scheduleSing(S, P.path, 0, rate, 0.05, saCents(), $('p-words').value);
+    const b = await ac.startRendering(); return b.getChannelData(0);
+  };
   function fitV(snap) {
     if (!P.path) return;
     const span = +$('p-zoom').value, a = Math.max(0, Math.floor((P.pt - span * 0.3) * P.path.fps)), b = Math.ceil((P.pt + span * 1.1) * P.path.fps);
@@ -888,20 +1003,22 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       const tg = tgtAt(P.pt), you = running && now - live.t < 0.15 && !isNaN(live.c) ? live.c - saCents() : NaN;
       if (!isNaN(you)) P.trail.push({ t: P.pt, rel: you });
       if (P.trail.length > 4000) P.trail.splice(0, 1000);
-      if (P.sc && tg != null && P.pt >= 0 && !micPaused()) { P.sc.tot++; if (!isNaN(you)) { P.sc.sung++; const d = Math.abs(you - tg); if (d <= 25) P.sc.on++; if (d <= 50) P.sc.close++; } }
+      if (P.sc && !P.demo && tg != null && P.pt >= 0 && !micPaused()) { P.sc.tot++; if (!isNaN(you)) { P.sc.sung++; const d = Math.abs(you - tg); if (d <= 25) P.sc.on++; if (d <= 50) P.sc.close++; } }
       if (P.guide) { if (tg != null) { P.guide.o.frequency.setTargetAtTime(hzOf(saCents() + tg), ctx.currentTime, 0.015); P.guide.g.gain.setTargetAtTime(0.07, ctx.currentTime, 0.03); } else P.guide.g.gain.setTargetAtTime(0, ctx.currentTime, 0.03); }
       // live line under the canvas
       const el = $('p-live'); el.textContent = '';
       if (P.pt < 0) el.textContent = 'Get ready… ' + Math.ceil(-P.pt);
       else if (tg != null) {
         const ts = swarOf(tg), s = document.createElement('span');
-        if (isNaN(you)) s.textContent = 'Now: ' + ts.dv + ' ' + ts.ro + ' — sing';
+        if (P.demo) s.textContent = '🎧 Demo singing: ' + ts.dv + ' ' + ts.name;
+        else if (isNaN(you)) s.textContent = 'Now: ' + ts.dv + ' ' + ts.ro + ' — sing';
         else { const d = Math.round(you - tg); if (Math.abs(Math.abs(d) - 1200) <= 60) { s.className = 'up'; s.textContent = 'Right note, but an octave ' + (d < 0 ? 'below' : 'above') + ': aim for ' + ts.ro; } else if (Math.abs(d) <= 25) { s.className = 'on'; s.textContent = '✓ On the line · ' + ts.ro + ' (' + (d >= 0 ? '+' : '') + d + '¢)'; } else { s.className = d < 0 ? 'up' : 'down'; s.textContent = (d < 0 ? '↑ go up ' : '↓ come down ') + Math.abs(d) + '¢ to ' + ts.ro; } }
         el.appendChild(s);
       } else el.textContent = 'Breathe';
       $('p-seek').value = Math.max(0, Math.min(100, P.pt / dur() * 100));
       if (P.pt > dur() + 0.6) {
-        if ($('p-loop').checked) { showScore(); seekTo(-1.5); P.trail = []; P.sc = { tot: 0, sung: 0, on: 0, close: 0 }; }
+        if ($('p-loop').checked && !P.demo) { showScore(); seekTo(-1.5); P.trail = []; P.sc = { tot: 0, sung: 0, on: 0, close: 0 }; }
+        else if (P.demo) { P.playing = false; P.demo = false; demoStop(); $('p-demo').textContent = '🎧 Demo again'; $('p-score').textContent = 'Your turn: press Start and sing the same line.'; P.pt = dur(); }
         else { P.playing = false; $('p-go').textContent = '▶ Start again'; guideOff(); showScore(); P.pt = dur(); }
       }
     }
