@@ -75,6 +75,7 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
 .hud-strain { font-size: .8rem; line-height: 1.25; max-width: 11rem; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); }
 .hud-strain.ok { color: var(--good); border-color: rgba(127,191,106,.45); }
 .hud-strain.warn { color: #120d0b; background: var(--brass); border-color: var(--brass); }
+.hud-strain.info { color: #0b1d22; background: #7fd3e6; border-color: #7fd3e6; }
 .hud-strain.bad { color: #fff; background: #b8452f; border-color: #e07a5f; }
 .hud-strain:empty { display: none; }
 .hud-vt { font-size: .75rem; color: var(--brass); }
@@ -124,6 +125,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     </div>
     <div class="row">
       <label class="chk"><input type="checkbox" id="hp"> I'm wearing headphones</label>
+      <label class="chk"><input type="checkbox" id="tech"> Using fry / rasp / flips on purpose</label>
       <button class="btn small" id="sa-from-held" type="button" title="Hold your Sa steadily, then tap">Use my held note as Sa</button>
     </div>
     <p class="leak" id="leak" hidden></p>
@@ -227,7 +229,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   const W = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
   const SW = [['सा','S','Sa'],['रे॒','r','komal Re'],['रे','R','Re'],['ग॒','g','komal Ga'],['ग','G','Ga'],['म','m','Ma'],['म॑','M','tivra Ma'],['प','P','Pa'],['ध॒','d','komal Dha'],['ध','D','Dha'],['नि॒','n','komal Ni'],['नि','N','Ni']];
   const JI = [0,112,204,316,386,498,590,702,814,884,996,1088];
-  const st = { sa: 6, oct: 0, hp: false, hpSet: false, dvol: 0.18, vt: { b: {}, last: '' } };
+  const st = { sa: 6, oct: 0, hp: false, hpSet: false, dvol: 0.18, tech: false, vt: { b: {}, last: '' } };
   try { const s = JSON.parse(localStorage.getItem('riyaz-tuner') || 'null'); if (s) Object.assign(st, s); } catch (e) {}
   const saSel = document.getElementById('sa'), octSel = document.getElementById('oct');
   KEYS.forEach(([w, h], i) => { const o = document.createElement('option'); o.value = i; o.textContent = h + ' · ' + w; saSel.appendChild(o); });
@@ -302,6 +304,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   // iPhone (Safari 17+): 'playback' plays even with the silent switch on; 'play-and-record' while the mic is open
   function setSession(type) { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (e) {} }
   // ---------- headphones / sound leaking into the mic ----------
+  const techBox = document.getElementById('tech'); techBox.checked = !!st.tech; techBox.onchange = () => { st.tech = techBox.checked; save(); };
   const hpBox = document.getElementById('hp'); hpBox.checked = !!st.hp;
   hpBox.onchange = async () => { st.hp = hpBox.checked; st.hpSet = true; save(); updateLeak(); if (running) { stop(true); await start(); } };
   async function guessHeadphones() {
@@ -356,8 +359,10 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     let e = 0;
     for (let i = 0; i < x.length; i++) { let s = 0; for (let k = 0; k < step; k++) s += buf[off + i * step + k]; x[i] = s / step; e += x[i] * x[i]; }
     const rms = Math.sqrt(e / x.length);
+    let pk = 0; for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > pk) pk = a; }
+    const crest = rms > 0 ? pk / rms : 0;
     const tmin = Math.floor(fs / 1000), tmax = Math.floor(fs / 70), N = x.length - tmax - 1;
-    if (N < tmax / 2 || rms < 0.006) return { rms, f: null, ap: 1 };
+    if (N < tmax / 2 || rms < 0.006) return { rms, f: null, ap: 1, crest };
     const d = new Float32Array(tmax + 2); let cum = 0, best = -1;
     for (let tau = 1; tau <= tmax + 1; tau++) {
       let s = 0; for (let j = 0; j < N; j++) { const v = x[j] - x[j + tau]; s += v * v; }
@@ -365,18 +370,20 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     }
     for (let tau = tmin; tau < tmax; tau++) if (d[tau] < 0.15) { while (tau + 1 < tmax && d[tau + 1] < d[tau]) tau++; best = tau; break; }
     let ap = 1; for (let tau = tmin; tau < tmax; tau++) if (d[tau] < ap) ap = d[tau];   // 0 = clean periodic tone, high = rough/noisy
-    if (best < 0 || 1 - d[best] < 0.75) return { rms, f: null, ap };
+    if (best < 0 || 1 - d[best] < 0.75) return { rms, f: null, ap, crest };
     const a = d[best - 1], b = d[best], c = d[best + 1], den = a - 2 * b + c;
     const tt = best + (Math.abs(den) > 1e-9 ? 0.5 * (a - c) / den : 0);
-    const f = fs / tt; return { rms, f: f >= 70 && f <= 1000 ? f : null, ap: b };
+    const f = fs / tt; return { rms, f: f >= 70 && f <= 1000 ? f : null, ap: b, crest };
   }
 
   // ---------- strain / effort check (a heuristic from the sound only) ----------
-  function bright() {             // alpha ratio: energy 1-5 kHz vs 50 Hz-1 kHz, in dB (higher = brighter/pressed)
+  function spec(f0) {             // br: energy 1-5 kHz vs 50 Hz-1 kHz in dB (higher = brighter); h12: 1st minus 2nd harmonic in dB
     an.getFloatFrequencyData(fbuf);
     const bin = ctx.sampleRate / an.fftSize; let lo = 0, hi = 0;
     for (let i = Math.ceil(50 / bin); i < Math.min(fbuf.length, 5000 / bin); i++) { const pw = Math.pow(10, fbuf[i] / 10); if (i * bin < 1000) lo += pw; else hi += pw; }
-    return lo > 0 && hi > 0 ? 10 * Math.log10(hi / lo) : NaN;
+    const peak = (f) => { const c = Math.round(f / bin), w = Math.max(2, Math.round(.06 * f / bin)); let m = -Infinity; for (let i = c - w; i <= c + w; i++) if (fbuf[i] > m) m = fbuf[i]; return m; };
+    const h12 = f0 && f0 >= 90 ? peak(f0) - peak(2 * f0) : NaN;
+    return { br: lo > 0 && hi > 0 ? 10 * Math.log10(hi / lo) : NaN, h12 };
   }
   const brBase = [], dbBase = [];        // this session's own voice, as the baseline
   const SL = { lvl: -1, until: 0, msg: '' };
@@ -386,12 +393,17 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     const w = hist.filter(h => h.t > now - 1.5), V = w.filter(h => !isNaN(h.c));
     const cur = hist[hist.length - 1];
     if (!isNaN(cur.c)) { if (!isNaN(cur.br)) { brBase.push(cur.br); if (brBase.length > 1500) brBase.shift(); } dbBase.push(cur.db); if (dbBase.length > 1500) dbBase.shift(); }
-    let lvl = -1; const why = [];
-    if (V.length >= 20) {
+    let lvl = -1; const why = []; let info = '';
+    const tech = !!st.tech, snd = w.filter(h => h.db > -44);
+    // vocal fry: sound present but no steady pitch (or below ~95 Hz) and the wave comes in separate sharp pulses
+    const fry = snd.filter(h => (isNaN(h.rc) || hzOf(h.rc) < 95) && h.crest > 4.5);
+    const quietish = dbBase.length < 200 || (fry.length && fry.map(h => h.db).sort((a, b) => a - b)[fry.length >> 1] < dbBase.slice().sort((a, b) => a - b)[Math.floor(dbBase.length * .7)]);
+    if (snd.length >= 20 && fry.length / snd.length > 0.35 && V.length < snd.length * 0.6 && quietish) {   // fry is quiet; a loud pulsing sound is not fry
+      lvl = 0; info = '〰 Vocal fry: the relaxed, crackly bottom register. Not strain. Keep it quiet; don\'t push volume into it.';
+    } else if (V.length >= 20) {
       lvl = 0;
-      // 1. cracks: sudden jumps between neighbouring voiced frames, or the voice cutting out mid-phrase while still loud
+      // cracks (flips): the raw pitch leaps 3.5+ semitones within ~70 ms and snaps back within ~0.35 s
       let cracks = 0, drops = 0;
-      // cracks: the raw pitch leaps 3.5+ semitones within ~70 ms and snaps back within ~0.35 s (a real note change stays put)
       for (let i = 0; i < w.length; i++) {
         const p = w[i]; if (isNaN(p.rc)) continue;
         let q = -1; for (let k = i + 1; k < w.length && w[k].t - p.t < 0.07; k++) if (!isNaN(w[k].rc) && Math.abs(w[k].rc - p.rc) > 350) { q = k; break; }
@@ -401,30 +413,37 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       for (let i = 1; i < w.length - 1; i++) {
         if (isNaN(w[i].c) && !isNaN(w[i - 1].c) && w[i].db > -38) { let j = i; while (j < w.length && isNaN(w[j].c)) j++; if (j < w.length && w[j].t - w[i].t < 0.06 && Math.abs(w[j].c - w[i - 1].c) < 150) drops++; i = j; }
       }
-      // 2. roughness: how far each voiced frame is from a clean, periodic tone
-      const aps = V.map(h => h.ap).sort((a, b) => a - b), apMed = aps[aps.length >> 1];
-      // 3. shake: frame-to-frame wobble left after removing the smooth line (vibrato and glides stay out)
+      const pct = (arr, q) => { const t = arr.slice().sort((a, b) => a - b); return t[Math.floor((t.length - 1) * q)]; };
+      const apMed = pct(V.map(h => h.ap), .5);
       const res = [];
       for (let i = 1; i < w.length - 1; i++) { const a = w[i - 1].c, b = w[i].c, c = w[i + 1].c; if (!isNaN(a) && !isNaN(b) && !isNaN(c) && Math.abs(c - a) < 80) res.push(b - (a + c) / 2); }
       const shake = res.length > 10 ? Math.sqrt(res.reduce((s2, v) => s2 + v * v, 0) / res.length) : 0;
-      // 4. pushing: clearly louder AND brighter than your own usual, on the upper notes
-      const rel = V[V.length - 1].c - saCents();
-      const brNow = V.map(h => h.br).filter(v => !isNaN(v)), dbNow = V.map(h => h.db);
-      const pct = (arr, q) => { const t = arr.slice().sort((a, b) => a - b); return t[Math.floor((t.length - 1) * q)]; };
-      const push = brBase.length > 200 && brNow.length > 5 && rel > 600 && pct(brNow, .5) > pct(brBase, .5) + 5 && pct(dbNow, .5) > pct(dbBase, .8);
-      if (cracks >= 1) { lvl = 2; why.push('voice cracked'); }
-      if (drops >= 3) { lvl = Math.max(lvl, 1); why.push('voice breaking up'); }
-      if (apMed > 0.16) { lvl = Math.max(lvl, 2); why.push('rough / pressed tone'); } else if (apMed > 0.10) { lvl = Math.max(lvl, 1); why.push('tone getting rough'); }
-      if (shake > 22) { lvl = Math.max(lvl, 2); why.push('note shaking'); } else if (shake > 13) { lvl = Math.max(lvl, 1); why.push('note wobbling'); }
-      if (push) { lvl = Math.max(lvl, 1); why.push('pushing louder on top'); if (apMed > 0.10) lvl = 2; }
+      const rel = V[V.length - 1].c - saCents(), high = rel > 600;
+      const brNow = V.map(h => h.br).filter(v => !isNaN(v)), dbNow = V.map(h => h.db), h12s = V.map(h => h.h12).filter(v => !isNaN(v));
+      const h12 = h12s.length > 5 ? pct(h12s, .5) : NaN;
+      const brighter = brBase.length > 200 && brNow.length > 5 && pct(brNow, .5) > pct(brBase, .5) + 5;
+      const louder = dbBase.length > 200 && pct(dbNow, .5) > pct(dbBase, .8);
+      const pressed = h12 < -2;                     // 2nd harmonic louder than the 1st: squeezed vocal folds
+      const breathy = h12 > 9 && !brighter;         // weak overtones, strong 1st: air leaking, a relaxed sound
+      const rough = apMed > 0.10, veryRough = apMed > 0.16;
+      const effort = pressed || (brighter && louder) || (high && louder);
+      // strain = rough or unstable sound TOGETHER WITH signs of effort; roughness alone may be a technique
+      if (rough && effort) { lvl = 2; why.push(veryRough ? 'rough and pressed' : 'roughness while pushing'); }
+      if (!tech && rough && high && lvl < 2) { lvl = Math.max(lvl, veryRough ? 2 : 1); why.push('rough tone on a high note'); }
+      if (pressed && high) { lvl = Math.max(lvl, 1); why.push('squeezed tone on a high note'); }
+      if (high && brighter && louder) { lvl = Math.max(lvl, rough ? 2 : 1); why.push('pushing louder on top'); }
+      if (!tech && cracks >= 1) { lvl = Math.max(lvl, effort ? 2 : 1); why.push(effort ? 'voice cracked under pressure' : 'voice flipped'); }
+      if (!tech && drops >= 3) { lvl = Math.max(lvl, 1); why.push('voice breaking up'); }
+      if (shake > 22 && effort) { lvl = Math.max(lvl, 2); why.push('note shaking'); } else if (shake > 18) { lvl = Math.max(lvl, 1); why.push('note wobbling'); }
+      if (lvl <= 0 && rough && !tech) info = breathy ? '〰 Breathy, airy tone: not strain. For a clearer tone, less air, gentle "ng" onset.' : '〰 Raspy / rough tone, but no push heard. Fine if on purpose; ease off if it tickles or hurts.';
     }
     // hold a warning on screen for 2 s so it can be read
     if (lvl >= SL.lvl || now > SL.until) {
-      SL.lvl = lvl; SL.until = now + (lvl > 0 ? 2 : 0);
-      SL.msg = lvl < 0 ? '' : lvl === 0 ? '✓ Easy voice, no strain heard'
+      SL.lvl = lvl; SL.until = now + (lvl > 0 || info ? 2 : 0);
+      SL.msg = lvl < 0 ? '' : lvl === 0 ? (info || '✓ Easy voice, no strain heard')
         : lvl === 1 ? '⚠ Effort: ' + why[0] + '. Lighten: less breath push, loose jaw.'
         : '✕ Strain: ' + why[0] + '. Stop, reset on a soft "ng" hum, try lighter.';
-      el.textContent = SL.msg; el.className = 'hud-strain ' + (lvl === 0 ? 'ok' : lvl === 1 ? 'warn' : lvl === 2 ? 'bad' : '');
+      el.textContent = SL.msg; el.className = 'hud-strain ' + (lvl === 0 ? (info ? 'info' : 'ok') : lvl === 1 ? 'warn' : lvl === 2 ? 'bad' : '');
     }
   }
 
@@ -450,7 +469,8 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       const s = recent.slice().sort((p, q) => p - q); c = s[Math.floor(s.length / 2)];
     } else { recent.length = 0; rawRecent.length = 0; }
     live.c = c; live.t = now;
-    hist.push({ t: now, c, rc, db: 20 * Math.log10(r.rms + 1e-9), ap: r.ap, br: (!paused && r.rms > 0.01 && (frameN & 1)) ? bright() : NaN });
+    const sp = (!paused && r.rms > 0.01 && (frameN & 1)) ? spec(r.f) : { br: NaN, h12: NaN };
+    hist.push({ t: now, c, rc, db: 20 * Math.log10(r.rms + 1e-9), ap: r.ap, crest: r.crest || 0, br: sp.br, h12: sp.h12 });
     strainTick(now, paused);
     while (hist.length && hist[0].t < now - 10) hist.shift();
     show(c, now);
@@ -461,7 +481,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   // typical sung ranges (Hz): bass E2-E4, baritone A2-A4, tenor C3-C5, alto F3-F5, mezzo A3-A5, soprano C4-C6.
   // The middle of the notes you hold comfortably (your tessitura) is compared with the middles of those ranges.
   const VT = [['Bass', 0, 190], ['Baritone', 190, 240], ['Tenor', 240, 302], ['Alto / countertenor', 302, 392], ['Mezzo-soprano', 392, 480], ['Soprano', 480, 1e9]];
-  const VT_HALF = 300, VT_MIN = 6;          // forget half of old data per 5 min of held singing; need 6 s held to start
+  const VT_HALF = 300, VT_MIN = 4;          // forget half of old data per 5 min of held singing; need 4 s held to start
   if (!st.vt || !st.vt.b) st.vt = { b: {}, last: '' };
   let vtT = 0, vtSaved = 0, vtChanged = { from: '', t: -1e9 };
   const noteName = (m) => W[(m % 12 + 12) % 12] + (Math.floor(m / 12) - 1);
@@ -483,7 +503,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   }
   function vtShow(now) {
     const S = vtStats(), tEl = document.getElementById('vt-type'), sEl = document.getElementById('vt-sub'), hud = document.getElementById('hud-vt');
-    if (S.tot < VT_MIN) { tEl.textContent = '—'; sEl.textContent = S.tot ? 'Learning… ' + S.tot.toFixed(1) + ' of ' + VT_MIN + ' s of held notes' : 'Hold a few notes to see it'; hud.textContent = ''; document.getElementById('vt-home').textContent = '—'; document.getElementById('vt-range').textContent = ''; return; }
+    if (S.tot < VT_MIN) { tEl.textContent = '—'; sEl.textContent = S.tot ? 'Learning… ' + S.tot.toFixed(1) + ' of ' + VT_MIN + ' s of held notes. Hold an open "aa" on comfortable notes, 1-2 s each; speech, slides and fry don\'t count.' : 'Hold an open "aa" on a few comfortable notes, 1-2 s each'; hud.textContent = ''; document.getElementById('vt-home').textContent = '—'; document.getElementById('vt-range').textContent = ''; return; }
     const hz = hzOf(S.med * 100), i = VT.findIndex(v => hz >= v[1] && hz < v[2]), v = VT[i];
     let lean = '';                                                     // within a semitone of the next type
     if (i > 0 && hz < v[1] * 2 ** (1 / 12)) lean = 'leaning ' + VT[i - 1][0].toLowerCase();
@@ -540,12 +560,13 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     const m = Math.round(c / 100); document.getElementById('west').textContent = W[(m % 12 + 12) % 12] + (Math.floor(m / 12) - 1) + ' · ' + sw.name;
     // centre of voice (last 10 s) and held note (last 0.6 s steady)
     const v = hist.filter(h => !isNaN(h.c)).map(h => h.c).sort((p, q) => p - q);
-    if (v.length > 20) { const med = v[Math.floor(v.length / 2)], s2 = swarOf(med - saCents()); document.getElementById('centre').textContent = Math.round(hzOf(med)) + ' Hz · ' + s2.ro; }
+    if (v.length > 20) { const med = v[Math.floor(v.length / 2)], s2 = swarOf(med - saCents()); document.getElementById('centre').textContent = Math.round(hzOf(med)) + ' Hz · ' + noteName(Math.round(med / 100)) + ' · ' + s2.name; }
     const last = hist.filter(h => h.t > now - 0.6);
-    const lv = last.map(h => h.c);
-    if (lv.length > 8 && lv.every(x => !isNaN(x)) && Math.max(...lv) - Math.min(...lv) < 40) {
+    const lv = last.map(h => h.c).filter(x => !isNaN(x));   // a few dropped frames (breath, consonant) don't break a hold
+    if (lv.length > 8 && lv.length >= last.length * 0.8 && Math.max(...lv) - Math.min(...lv) < 45) {
       const mm = lv.slice().sort((p, q) => p - q)[Math.floor(lv.length / 2)], s3 = swarOf(mm - saCents());
-      document.getElementById('held').textContent = s3.ro + ' ' + (s3.err >= 0 ? '+' : '') + Math.round(s3.err) + '¢';
+      const e3 = Math.round(s3.err);
+      document.getElementById('held').textContent = s3.dv + ' ' + s3.name + ' · ' + noteName(Math.round(mm / 100)) + ' · ' + (Math.abs(e3) <= 5 ? 'in tune' : Math.abs(e3) + '¢ ' + (e3 > 0 ? 'sharp' : 'flat'));
       mapLanding(mm - saCents(), s3, now);
       vtAdd(mm, now); rangeHeld(mm);
       const hint = document.getElementById('sa-hint'), relm = mm - saCents();
