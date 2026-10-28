@@ -186,7 +186,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       <button class="btn" id="p-restart" type="button">⟲ Restart</button>
       <button class="btn" id="p-demo" type="button" title="Hear the path sung, then sing it yourself">🎧 Demo: hear it sung</button>
       <div class="field"><label class="label" for="p-vsel">Demo voice</label><select id="p-vsel"><option value="real" selected>My real voice (re-pitched)</option><option value="synth">Synth model</option></select></div>
-      <div class="field"><label class="label" for="p-words">Demo sings</label><select id="p-words"><option value="sargam" selected>Sargam (Sa Re Ga)</option><option value="aakar">Aakar ("aa")</option><option value="legato">Aakar, joined (no breaks)</option></select></div>
+      <div class="field"><label class="label" for="p-words">Demo sings</label><select id="p-words"><option value="legato" selected>Aakar, joined (no breaks)</option><option value="aakar">Aakar ("aa"), each note separate</option><option value="sargam">Sargam (Sa Re Ga), rough syllables</option></select></div>
       <div class="field"><label class="label" for="p-speed">Speed</label><select id="p-speed"><option value="0.5">0.5× slow</option><option value="0.75">0.75×</option><option value="1" selected>1×</option></select></div>
       <div class="field"><label class="label" for="p-zoom">Zoom</label><select id="p-zoom"><option value="4">Close · 4 s</option><option value="7" selected>Normal · 7 s</option><option value="12">Wide · 12 s</option></select></div>
     </div>
@@ -872,7 +872,13 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     if (!P.path) setPath(genPath(+$('p-level').value));
     ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume();
     const first = P.path.notes.length ? P.path.notes[0].rel : P.path.c.find(v => v != null);
-    const v = voice(hzOf(saCents() + first), .12); noteUntil = performance.now() / 1000 + 2.1; updateLeak(); setTimeout(() => v.stop(), 1800);
+    noteUntil = performance.now() / 1000 + 2.1; updateLeak();
+    if (VOICES.length && $('p-vsel').value !== 'synth') {          // sing it in your own voice
+      VS = pickVoice(P.path, saCents());
+      const y = renderReal({ fps: 50, c: new Array(90).fill(first), notes: [{ t: 0, d: 1.8, rel: first }] }, 0, 1, saCents(), 'legato');
+      const b = ctx.createBuffer(1, y.length, VS[0].sr); b.getChannelData(0).set(y);
+      const src = ctx.createBufferSource(), g = ctx.createGain(); g.gain.value = Math.min(1, Math.max(0.35, (+st.dvol || 0.18) * 3)); src.buffer = b; src.connect(g); g.connect(ctx.destination); src.start();
+    } else { const v = voice(hzOf(saCents() + first), .12); setTimeout(() => v.stop(), 1800); }
   };
   function guideOn() {
     if (P.guide) return; ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
@@ -1006,12 +1012,12 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     const env = new Float32Array(N); let lvl = 0, wob = 0, wobT = 0;
     const dipAt = new Map();
     if (words !== 'legato') for (const [i, idx] of onset) { const tau = lead + (i / fps - t0p) / speed; if (tau > lead + 0.05) dipAt.set(Math.round(tau * sr), idx); }
-    let dipEnd = -1, dipLvl = 1, hissEnd = -1;
+    let dipEnd = -1, dipLvl = 1, hissEnd = -1, hissStart = 0;
     for (let n = 0; n < N; n++) {
-      if (dipAt.has(n + Math.round(0.06 * sr))) { const idx = dipAt.get(n + Math.round(0.06 * sr)), cons = words === 'sargam' ? SYL[idx][0] : 'a'; dipEnd = n + Math.round(0.06 * sr); dipLvl = cons === 's' || cons === 'p' ? 0 : cons === 'm' || cons === 'n' ? 0.35 : cons === 'r' ? 0.45 : cons === 'a' ? 0.6 : 0.08; if (cons === 's') hissEnd = dipEnd; }
+      if (dipAt.has(n + Math.round(0.06 * sr))) { const idx = dipAt.get(n + Math.round(0.06 * sr)), cons = words === 'sargam' ? SYL[idx][0] : 'a'; dipEnd = n + Math.round(0.06 * sr); dipLvl = cons === 's' || cons === 'p' ? 0 : cons === 'm' || cons === 'n' ? 0.35 : cons === 'r' ? 0.45 : cons === 'a' ? 0.6 : 0.08; if (cons === 's') { hissEnd = dipEnd; hissStart = n; } }
       const want = (n < dipEnd ? dipLvl : 1) * (at(n / sr) ? 1 : 0);
-      lvl += (want - lvl) * (want > lvl ? 0.0016 : 0.0022); env[n] = lvl;
-      if (n < hissEnd) { const r = Math.random() * 2 - 1; out[n] += (r - wob) * 0.05; wob = r; }   // "s": simple high hiss
+      lvl += (want - lvl) * (want > lvl ? 0.0009 : 0.0016); env[n] = lvl;   // ~50 ms fade in, ~30 ms fade out
+      if (n < hissEnd) { const r = Math.random() * 2 - 1, u = (n - hissStart) / Math.max(1, hissEnd - hissStart); out[n] += (r - wob) * 0.02 * Math.sin(Math.PI * u); wob = r; }   // "s": simple high hiss
     }
     // PSOLA: one grain per output cycle. With several recordings, each cycle blends the two whose pitch brackets the note
     // (by log-pitch), so a rising line moves gradually from chest to mix to head voice. Each recording keeps its own
