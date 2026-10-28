@@ -78,6 +78,9 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
 .hud-strain.bad { color: #fff; background: #b8452f; border-color: #e07a5f; }
 .hud-strain:empty { display: none; }
 .hud-vt { font-size: .75rem; color: var(--brass); }
+.fact.rng { grid-column: 1 / -1; }
+.rng-row { display: flex; align-items: baseline; gap: .6rem; }
+.rng-k { font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); width: 2.6rem; }
 .hud-vt:empty { display: none; }
 .vt-type { font-size: 1.15rem; }
 .vt-sub { font-size: .8rem; color: var(--muted); font-family: var(--font-mono); margin-top: 2px; }
@@ -144,6 +147,11 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       <div class="fact"><div class="label">Held note</div><div class="v" id="held">—</div></div>
       <div class="fact"><div class="label">Voice type (from the notes you hold)</div><div class="v vt-type" id="vt-type">—</div><div class="vt-sub" id="vt-sub">Hold a few notes to see it</div></div>
       <div class="fact"><div class="label">Note you hold most</div><div class="v" id="vt-home">—</div><div class="vt-sub" id="vt-range"></div></div>
+      <div class="fact rng"><div class="label">This session's range <button class="btn small" id="rng-reset" type="button">New session</button></div>
+        <div class="rng-row"><span class="rng-k">Low</span><span class="v" id="rng-lo">—</span></div>
+        <div class="rng-row"><span class="rng-k">High</span><span class="v" id="rng-hi">—</span></div>
+        <div class="vt-sub" id="rng-span">Sing your lowest and highest notes; each must last about ¼ s to count</div>
+        <div class="vt-sub" id="rng-held"></div></div>
     </div>
     <p class="note">Voice type here is a guess from <em>pitch only</em>: where your held, comfortable notes sit. It skips speech and slides, keeps learning across sessions, and slowly forgets old singing so it follows you if your voice changes. A teacher also listens to tone colour and where your voice flips, so treat it as a pointer. <button class="btn small" id="vt-reset" type="button">Reset</button></p>
     <p class="hint" id="sa-hint"></p>
@@ -423,6 +431,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   // ---------- display ----------
   const hist = [];               // {t, c (cents or NaN), db}
   const recent = [];             // last few cents for smoothing
+  const rawRecent = [];          // last few unfolded readings, for the octave guard
   window.__riyaz = { hist };     // for testing in the browser console
   const cv = document.getElementById('trail');
   let lastDraw = 0;
@@ -433,10 +442,13 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     if ((frameN++ & 3) === 0) updateLeak();
     if (r.f) {
       let cc = centsOf(r.f); rc = cc;
-      if (recent.length) { const m = recent[recent.length - 1], k = Math.round((cc - m) / 1200); if (k && Math.abs(cc - k * 1200 - m) < 150) cc -= k * 1200; }
+      // octave guard: fold a one-off octave jump back, judged against the RAW recent readings (not the folded ones),
+      // so a real octave change wins after ~3 frames instead of the whole note getting stuck an octave off
+      if (rawRecent.length >= 3) { const rs = rawRecent.slice().sort((p, q) => p - q), m = rs[rs.length >> 1], k = Math.round((cc - m) / 1200); if (k && Math.abs(cc - k * 1200 - m) < 150) cc -= k * 1200; }
+      rawRecent.push(rc); if (rawRecent.length > 5) rawRecent.shift();
       recent.push(cc); if (recent.length > 5) recent.shift();
       const s = recent.slice().sort((p, q) => p - q); c = s[Math.floor(s.length / 2)];
-    } else recent.length = 0;
+    } else { recent.length = 0; rawRecent.length = 0; }
     live.c = c; live.t = now;
     hist.push({ t: now, c, rc, db: 20 * Math.log10(r.rms + 1e-9), ap: r.ap, br: (!paused && r.rms > 0.01 && (frameN & 1)) ? bright() : NaN });
     strainTick(now, paused);
@@ -488,12 +500,37 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   document.getElementById('vt-reset').onclick = () => { st.vt = { b: {}, last: '' }; save(); vtShow(performance.now() / 1000); };
   vtShow(0);
 
+  // ---------- this session's range ----------
+  // reached = any note kept steady (within 60¢) for about 0.25 s; held = the longer steady holds used elsewhere
+  const R = { lo: null, hi: null, hlo: null, hhi: null, t0: performance.now() / 1000 };
+  const keyLabel = (c) => { const m = Math.round(c / 100), sw = swarOf(c - saCents()); return noteName(m) + ' · ' + sw.dv + ' ' + sw.ro + ' (' + Math.round(hzOf(c)) + ' Hz)'; };
+  function rangeTick(now) {
+    const w = hist.filter(h => h.t > now - 0.25).map(h => h.c);
+    if (w.length < 10 || w.some(isNaN) || Math.max(...w) - Math.min(...w) > 60) return;
+    const c = w.slice().sort((a, b) => a - b)[w.length >> 1];
+    let ch = false;
+    if (R.lo == null || c < R.lo) { R.lo = c; ch = true; }
+    if (R.hi == null || c > R.hi) { R.hi = c; ch = true; }
+    if (ch) rangeShow();
+  }
+  function rangeHeld(c) { let ch = false; if (R.hlo == null || c < R.hlo) { R.hlo = c; ch = true; } if (R.hhi == null || c > R.hhi) { R.hhi = c; ch = true; } if (ch) rangeShow(); }
+  function rangeShow() {
+    const $r = (id) => document.getElementById(id);
+    if (R.lo == null) { $r('rng-lo').textContent = '—'; $r('rng-hi').textContent = '—'; $r('rng-span').textContent = 'Sing your lowest and highest notes; each must last about ¼ s to count'; $r('rng-held').textContent = ''; return; }
+    $r('rng-lo').textContent = keyLabel(R.lo); $r('rng-hi').textContent = keyLabel(R.hi);
+    const st2 = Math.round((R.hi - R.lo) / 100), oc = Math.floor(st2 / 12), rem = st2 % 12;
+    $r('rng-span').textContent = 'Span ' + st2 + ' semitones' + (st2 >= 12 ? ' (' + oc + ' octave' + (oc > 1 ? 's' : '') + (rem ? ' + ' + rem : '') + ')' : '');
+    $r('rng-held').textContent = R.hlo == null ? '' : 'Steady held notes: ' + noteName(Math.round(R.hlo / 100)) + ' – ' + noteName(Math.round(R.hhi / 100));
+  }
+  [saSel, octSel].forEach(el => el.addEventListener('change', rangeShow));
+  document.getElementById('rng-reset').onclick = () => { R.lo = R.hi = R.hlo = R.hhi = null; rangeShow(); };
+
   let hintAt = 0;
   function show(c, now) {
     if (now - hintAt > 6) document.getElementById('sa-hint').textContent = '';
     const swEl = document.getElementById('swar'), cEl = document.getElementById('cents'), pin = document.getElementById('pin');
     if (isNaN(c)) { cEl.textContent = ''; pin.style.opacity = .25; mapUpdate(NaN); hudUpdate(NaN); return; }
-    mapUpdate(c - saCents()); hudUpdate(c - saCents(), c);
+    mapUpdate(c - saCents()); hudUpdate(c - saCents(), c); rangeTick(now);
     const sw = swarOf(c - saCents());
     swEl.textContent = sw.dv; const ro = document.createElement('span'); ro.className = 'ro'; ro.textContent = sw.ro; swEl.appendChild(ro);
     const dev = Math.round(sw.err), a = Math.abs(dev);
@@ -510,7 +547,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       const mm = lv.slice().sort((p, q) => p - q)[Math.floor(lv.length / 2)], s3 = swarOf(mm - saCents());
       document.getElementById('held').textContent = s3.ro + ' ' + (s3.err >= 0 ? '+' : '') + Math.round(s3.err) + '¢';
       mapLanding(mm - saCents(), s3, now);
-      vtAdd(mm, now);
+      vtAdd(mm, now); rangeHeld(mm);
       const hint = document.getElementById('sa-hint'), relm = mm - saCents();
       const noSa = landings.slice(-6).every(l => !/S/.test(l.name));
       if (s3.idx === 7 && noSa && relm < 0) { hint.textContent = 'You\'re holding low Pa (' + Math.round(hzOf(mm)) + ' Hz), a fifth below your Sa (' + Math.round(hzOf(saCents())) + ' Hz). Easy to land on by ear, especially with the Sa + low Pa drone. Aiming for Sa? Go up 5 notes. Is this really your Sa? Tap "Use my held note as Sa".'; hintAt = now; }
