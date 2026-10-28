@@ -77,6 +77,10 @@ canvas { display: block; width: 100%; height: 260px; border-radius: 8px; backgro
 .hud-strain.warn { color: #120d0b; background: var(--brass); border-color: var(--brass); }
 .hud-strain.bad { color: #fff; background: #b8452f; border-color: #e07a5f; }
 .hud-strain:empty { display: none; }
+.hud-vt { font-size: .75rem; color: var(--brass); }
+.hud-vt:empty { display: none; }
+.vt-type { font-size: 1.15rem; }
+.vt-sub { font-size: .8rem; color: var(--muted); font-family: var(--font-mono); margin-top: 2px; }
 .leak { font-size: .85rem; padding: 6px 10px; border-radius: 8px; background: rgba(224,122,95,.14); border: 1px solid rgba(224,122,95,.5); color: var(--fg); margin: 0; }
 .leak[hidden] { display: none; }
 .hint { font-size: .9rem; color: var(--brass); margin: 0; min-height: 1.3em; }
@@ -104,7 +108,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   <div class="hud" id="hud" aria-live="off">
     <svg id="hud-body" viewBox="0 52 140 340" role="img" aria-label="Where this pitch is usually felt"></svg>
     <div><div class="hud-swar" id="hud-swar">—</div><div class="hud-cents" id="hud-cents"></div></div>
-    <div class="hud-side"><div class="hud-zone" id="hud-zone">Start listening to see where your voice sits</div><div class="hud-strain" id="hud-strain" aria-live="polite"></div><div class="hud-hz" id="hud-hz"></div>
+    <div class="hud-side"><div class="hud-zone" id="hud-zone">Start listening to see where your voice sits</div><div class="hud-strain" id="hud-strain" aria-live="polite"></div><div class="hud-hz" id="hud-hz"></div><div class="hud-vt" id="hud-vt"></div>
       <button class="btn small primary" id="hud-mic" type="button">Start</button></div>
   </div>
 
@@ -138,7 +142,10 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     <div class="facts">
       <div class="fact"><div class="label">Centre of your voice (last 10 s)</div><div class="v" id="centre">—</div></div>
       <div class="fact"><div class="label">Held note</div><div class="v" id="held">—</div></div>
+      <div class="fact"><div class="label">Voice type (from the notes you hold)</div><div class="v vt-type" id="vt-type">—</div><div class="vt-sub" id="vt-sub">Hold a few notes to see it</div></div>
+      <div class="fact"><div class="label">Note you hold most</div><div class="v" id="vt-home">—</div><div class="vt-sub" id="vt-range"></div></div>
     </div>
+    <p class="note">Voice type here is a guess from <em>pitch only</em>: where your held, comfortable notes sit. It skips speech and slides, keeps learning across sessions, and slowly forgets old singing so it follows you if your voice changes. A teacher also listens to tone colour and where your voice flips, so treat it as a pointer. <button class="btn small" id="vt-reset" type="button">Reset</button></p>
     <p class="hint" id="sa-hint"></p>
     <p class="note">Green band = within 10 cents, gold = within 25. The pale line under the trail is your loudness: on the volume ladder the trail should stay flat while it rises and falls.</p>
   </section>
@@ -212,7 +219,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
   const W = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
   const SW = [['सा','S','Sa'],['रे॒','r','komal Re'],['रे','R','Re'],['ग॒','g','komal Ga'],['ग','G','Ga'],['म','m','Ma'],['म॑','M','tivra Ma'],['प','P','Pa'],['ध॒','d','komal Dha'],['ध','D','Dha'],['नि॒','n','komal Ni'],['नि','N','Ni']];
   const JI = [0,112,204,316,386,498,590,702,814,884,996,1088];
-  const st = { sa: 6, oct: 0, hp: false, hpSet: false, dvol: 0.18 };
+  const st = { sa: 6, oct: 0, hp: false, hpSet: false, dvol: 0.18, vt: { b: {}, last: '' } };
   try { const s = JSON.parse(localStorage.getItem('riyaz-tuner') || 'null'); if (s) Object.assign(st, s); } catch (e) {}
   const saSel = document.getElementById('sa'), octSel = document.getElementById('oct');
   KEYS.forEach(([w, h], i) => { const o = document.createElement('option'); o.value = i; o.textContent = h + ' · ' + w; saSel.appendChild(o); });
@@ -438,6 +445,49 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
     if (now - lastDraw > 1 / 30) { draw(now); lastDraw = now; }
     requestAnimationFrame(loop);
   }
+  // ---------- voice type from held notes ----------
+  // typical sung ranges (Hz): bass E2-E4, baritone A2-A4, tenor C3-C5, alto F3-F5, mezzo A3-A5, soprano C4-C6.
+  // The middle of the notes you hold comfortably (your tessitura) is compared with the middles of those ranges.
+  const VT = [['Bass', 0, 190], ['Baritone', 190, 240], ['Tenor', 240, 302], ['Alto / countertenor', 302, 392], ['Mezzo-soprano', 392, 480], ['Soprano', 480, 1e9]];
+  const VT_HALF = 300, VT_MIN = 6;          // forget half of old data per 5 min of held singing; need 6 s held to start
+  if (!st.vt || !st.vt.b) st.vt = { b: {}, last: '' };
+  let vtT = 0, vtSaved = 0, vtChanged = { from: '', t: -1e9 };
+  const noteName = (m) => W[(m % 12 + 12) % 12] + (Math.floor(m / 12) - 1);
+  function vtAdd(c, now) {
+    let dt = now - vtT; vtT = now; if (dt <= 0) return; if (dt > 0.1) dt = 1 / 60;   // a fresh hold after a gap counts one frame
+    const k = 2 ** (-dt / VT_HALF), b = st.vt.b;
+    const m = Math.round(c / 100);
+    for (const n in b) { b[n] *= k; if (b[n] < 0.005 && +n !== m) delete b[n]; }   // drop long-forgotten notes
+    b[m] = (b[m] || 0) + dt;
+    if (now - vtSaved > 5) { vtSaved = now; save(); }
+    vtShow(now);
+  }
+  function vtStats() {
+    const ms = Object.keys(st.vt.b).map(Number).sort((a, b) => a - b), tot = ms.reduce((s2, m) => s2 + st.vt.b[m], 0);
+    if (!ms.length) return { tot: 0 };
+    const pct = (q) => { let acc = 0; for (const m of ms) { acc += st.vt.b[m]; if (acc >= q * tot) return m; } return ms[ms.length - 1]; };
+    let home = ms[0]; for (const m of ms) if (st.vt.b[m] > st.vt.b[home]) home = m;
+    return { tot, med: pct(.5), lo: pct(.1), hi: pct(.9), home };
+  }
+  function vtShow(now) {
+    const S = vtStats(), tEl = document.getElementById('vt-type'), sEl = document.getElementById('vt-sub'), hud = document.getElementById('hud-vt');
+    if (S.tot < VT_MIN) { tEl.textContent = '—'; sEl.textContent = S.tot ? 'Learning… ' + S.tot.toFixed(1) + ' of ' + VT_MIN + ' s of held notes' : 'Hold a few notes to see it'; hud.textContent = ''; document.getElementById('vt-home').textContent = '—'; document.getElementById('vt-range').textContent = ''; return; }
+    const hz = hzOf(S.med * 100), i = VT.findIndex(v => hz >= v[1] && hz < v[2]), v = VT[i];
+    let lean = '';                                                     // within a semitone of the next type
+    if (i > 0 && hz < v[1] * 2 ** (1 / 12)) lean = 'leaning ' + VT[i - 1][0].toLowerCase();
+    if (i < VT.length - 1 && hz > v[2] / 2 ** (1 / 12)) lean = 'leaning ' + VT[i + 1][0].toLowerCase();
+    if (st.vt.last && st.vt.last !== v[0]) { vtChanged = { from: st.vt.last, t: now }; }
+    if (st.vt.last !== v[0]) { st.vt.last = v[0]; save(); }
+    tEl.textContent = v[0] + (lean ? ' · ' + lean : '');
+    sEl.textContent = 'middle of held notes ' + noteName(S.med) + ' (' + Math.round(hz) + ' Hz) · ' + Math.round(S.tot) + ' s heard' + (now - vtChanged.t < 20 ? ' · changed from ' + vtChanged.from : '');
+    hud.textContent = 'Voice: ' + v[0];
+    const sw = swarOf(S.home * 100 - saCents());
+    document.getElementById('vt-home').textContent = sw.ro + ' · ' + noteName(S.home) + ' (' + Math.round(hzOf(S.home * 100)) + ' Hz)';
+    document.getElementById('vt-range').textContent = 'comfortable held range ' + noteName(S.lo) + ' – ' + noteName(S.hi);
+  }
+  document.getElementById('vt-reset').onclick = () => { st.vt = { b: {}, last: '' }; save(); vtShow(performance.now() / 1000); };
+  vtShow(0);
+
   let hintAt = 0;
   function show(c, now) {
     if (now - hintAt > 6) document.getElementById('sa-hint').textContent = '';
@@ -460,6 +510,7 @@ input[type=range] { width: 100%; accent-color: var(--brass); }
       const mm = lv.slice().sort((p, q) => p - q)[Math.floor(lv.length / 2)], s3 = swarOf(mm - saCents());
       document.getElementById('held').textContent = s3.ro + ' ' + (s3.err >= 0 ? '+' : '') + Math.round(s3.err) + '¢';
       mapLanding(mm - saCents(), s3, now);
+      vtAdd(mm, now);
       const hint = document.getElementById('sa-hint'), relm = mm - saCents();
       const noSa = landings.slice(-6).every(l => !/S/.test(l.name));
       if (s3.idx === 7 && noSa && relm < 0) { hint.textContent = 'You\'re holding low Pa (' + Math.round(hzOf(mm)) + ' Hz), a fifth below your Sa (' + Math.round(hzOf(saCents())) + ' Hz). Easy to land on by ear, especially with the Sa + low Pa drone. Aiming for Sa? Go up 5 notes. Is this really your Sa? Tap "Use my held note as Sa".'; hintAt = now; }
