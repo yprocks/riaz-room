@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Night Listening</title>
+<style>
+/* VOICE: hushed, calm, few words: a bedside instrument
+   IDEA: a moonlit pond; two tones (left/right ear) make ripples that meet in the middle
+   STYLE: sleek house style, dark only because it is used in bed; moon gold is the single accent
+   LAYOUT: title, pond picture, big play button, presets, sliders, timer, then classical listening links */
+:root{color-scheme:dark;
+  --bg:#09090b;--surface:#111113;--surface-2:#1c1c1f;--line:#27272a;--ink:#fafafa;--mute:#a1a1aa;
+  --moon:#e8c46a;--moon-fg:#1c1606;--moon-soft:#2a2413;
+  --radius-sm:6px;--radius:10px;--radius-lg:14px;
+  --font:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+:root[data-theme=light],:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 var(--font);min-height:100dvh;overflow-x:clip;-webkit-font-smoothing:antialiased}
+.band{padding:24px 16px 48px;max-width:720px;margin:0 auto}
+@media(min-width:768px){.band{padding:48px 32px 64px}}
+h1{font-size:24px;font-weight:600;line-height:1.2;margin:0 0 4px;text-wrap:balance}
+h2{font-size:20px;font-weight:600;line-height:1.2;margin:0 0 4px}
+.sub{color:var(--mute);font-size:14px;margin:0 0 16px;text-wrap:pretty}
+.fig{position:relative;min-height:280px;height:40vh;max-height:400px;border-radius:var(--radius-lg);overflow:hidden;background:var(--surface);border:1px solid var(--line)}
+.fig>canvas{position:absolute;inset:0;width:100%;height:100%}
+.read{position:absolute;left:0;right:0;bottom:44px;text-align:center;color:var(--mute);font-size:13px;pointer-events:none}
+.read b{color:var(--ink);font-size:20px;font-weight:600;display:block;font-variant-numeric:tabular-nums}
+.play{display:flex;align-items:center;justify-content:center;margin:-32px auto 0;position:relative;width:64px;height:64px;border-radius:50%;border:4px solid var(--bg);background:var(--moon);color:var(--moon-fg);cursor:pointer}
+.play svg{width:26px;height:26px}
+:focus-visible{outline:2px solid var(--moon);outline-offset:2px}
+.hint{text-align:center;color:var(--mute);font-size:13px;margin:12px 0 24px;font-variant-numeric:tabular-nums}
+.presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:16px}
+.presets button{min-height:56px;border-radius:var(--radius);border:1px solid var(--line);background:var(--surface);color:var(--ink);font:500 14px var(--font);cursor:pointer;padding:8px}
+.presets button:hover{background:var(--surface-2)}
+.presets button small{display:block;color:var(--mute);font-weight:400;font-size:12px}
+.presets button[aria-pressed=true]{border-color:var(--moon);background:var(--moon-soft)}
+.row{display:grid;grid-template-columns:7.5em minmax(0,1fr) 4.5em;align-items:center;gap:12px;min-height:44px}
+.row label{color:var(--mute);font-size:14px}
+.row output{text-align:right;white-space:nowrap;font-size:14px;font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;height:44px;accent-color:var(--moon);background:transparent}
+.chips{display:flex;flex-wrap:wrap;gap:4px;padding:4px;margin:12px 0 0;background:var(--surface-2);border-radius:var(--radius);width:fit-content;max-width:100%}
+.chips button{height:36px;padding:0 12px;border-radius:var(--radius-sm);border:0;background:transparent;color:var(--mute);font:500 14px var(--font);cursor:pointer}
+.chips button:hover{color:var(--ink)}
+.chips button[aria-pressed=true]{background:var(--surface);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
+.sec{border-top:1px solid var(--line);margin-top:24px;padding-top:24px}
+.pieces{display:grid;gap:8px}
+.piece{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+.piece h3{margin:0 0 4px;font-size:16px;font-weight:600;line-height:1.3}
+.piece p{margin:0 0 8px;color:var(--mute);font-size:14px;text-wrap:pretty}
+.piece a{color:var(--moon);font-size:14px;font-weight:500;margin-right:16px;display:inline-flex;align-items:center;min-height:32px}
+.note{color:var(--mute);font-size:12px;margin-top:24px;text-wrap:pretty}
+@media(max-width:600px){.presets{grid-template-columns:repeat(2,minmax(0,1fr))}.row{grid-template-columns:6.5em minmax(0,1fr) 4em}
+  .chips{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));width:100%}.chips button{padding:0 4px;font-size:13px}}
+@media(prefers-reduced-motion:no-preference){.presets button,.chips button{transition:background-color .12s ease-out,color .12s ease-out}}
+</style></head><body>
+<main class="band">
+<h1>Night listening</h1>
+<p class="sub">Use headphones. Each ear gets a slightly different tone, and your brain hears a slow pulse where they meet.</p>
+<div class="fig"><canvas id="pond"></canvas><div class="read"><b id="beatRead">10 Hz</b><span id="stateRead">Paused</span></div></div>
+<button class="play" id="play" aria-label="Play"><svg id="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+<p class="hint" id="timerRead">Tap to start · fades in gently</p>
+
+<div class="presets" id="presets"></div>
+
+<div class="row"><label for="beat">Pulse</label><input id="beat" type="range" min="1" max="20" step="0.5"><output id="beatOut"></output></div>
+<div class="row"><label for="carrier">Tone</label><input id="carrier" type="range" min="80" max="400" step="5"><output id="carOut"></output></div>
+<div class="row"><label for="vol">Tone volume</label><input id="vol" type="range" min="0" max="100"><output id="volOut"></output></div>
+<div class="row"><label for="noise">Rain noise</label><input id="noise" type="range" min="0" max="100"><output id="noiseOut"></output></div>
+
+<div class="sec"><h2>Sleep timer</h2><p class="sub" style="margin:0">Fades out over the last minute.</p>
+<div class="chips" id="timers"></div></div>
+
+<div class="sec"><h2>Classical pieces</h2>
+<p class="sub">These sound best played by real pianists. Open one in another app and you can leave the pulse running quietly underneath. Turn the tone volume down low if you do.</p>
+<div class="pieces">
+<div class="piece"><h3>Beethoven · "Moonlight" Sonata, 1st movement</h3><p>Slow, dreamy and about 6 minutes long. The better of the two for relaxing.</p>
+<a href="https://www.youtube.com/results?search_query=Beethoven+Moonlight+Sonata+1st+movement">YouTube</a><a href="https://open.spotify.com/search/Moonlight%20Sonata%20Adagio%20sostenuto">Spotify</a></div>
+<div class="piece"><h3>Mozart · Sonata for Two Pianos, K.448</h3><p>Bright and lively, so it's better for unwinding while you're awake. The slow 2nd movement (Andante) is the calmest part.</p>
+<a href="https://www.youtube.com/results?search_query=Mozart+K448+sonata+two+pianos">YouTube</a><a href="https://open.spotify.com/search/Mozart%20K.%20448">Spotify</a></div>
+</div></div>
+<p class="note">Your settings are remembered on this device. Keep the volume low, and skip binaural beats if you're prone to seizures.</p>
+</main>
+<script>
+{
+const P=[{n:'Relax',d:'Alpha 10 Hz',b:10,c:200},{n:'Calm',d:'Theta 6 Hz',b:6,c:180},{n:'Sleep',d:'Delta 2.5 Hz',b:2.5,c:150},{n:'Focus',d:'Beta 14 Hz',b:14,c:240}];
+const T=[0,15,30,45,60];
+const $=id=>document.getElementById(id);
+let S={b:10,c:200,v:35,n:20,p:0,t:30};
+try{Object.assign(S,JSON.parse(localStorage.getItem('nl')||'{}'))}catch(e){}
+const save=()=>{try{localStorage.setItem('nl',JSON.stringify(S))}catch(e){}};
+let ctx,L,R,tg,ng,master,playing=false,endAt=0,tick;
+$('presets').innerHTML=P.map((p,i)=>`<button data-i="${i}" aria-pressed="${i===S.p}">${p.n}<small>${p.d}</small></button>`).join('');
+$('timers').innerHTML=T.map(m=>`<button data-m="${m}" aria-pressed="${m===S.t}">${m?m+' min':'No timer'}</button>`).join('');
+function ui(){
+$('beat').value=S.b;$('carrier').value=S.c;$('vol').value=S.v;$('noise').value=S.n;
+$('beatOut').textContent=S.b+' Hz';$('carOut').textContent=S.c+' Hz';$('volOut').textContent=S.v+'%';$('noiseOut').textContent=S.n+'%';
+$('beatRead').textContent=S.b+' Hz pulse';
+document.querySelectorAll('#presets button').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.i===S.p));
+document.querySelectorAll('#timers button').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.m===S.t));
+}
+function apply(){if(!ctx)return;const t=ctx.currentTime;
+L.frequency.setTargetAtTime(S.c,t,.3);R.frequency.setTargetAtTime(S.c+S.b,t,.3);
+tg.gain.setTargetAtTime(S.v/100*.35,t,.3);ng.gain.setTargetAtTime(S.n/100*.5,t,.3)}
+function build(){
+ctx=new (window.AudioContext||window.webkitAudioContext)();
+master=ctx.createGain();master.gain.value=0;master.connect(ctx.destination);
+tg=ctx.createGain();tg.connect(master);ng=ctx.createGain();ng.connect(master);
+const mk=(f,pan)=>{const o=ctx.createOscillator();o.type='sine';o.frequency.value=f;const p=ctx.createStereoPanner();p.pan.value=pan;o.connect(p);p.connect(tg);o.start();return o};
+L=mk(S.c,-1);R=mk(S.c+S.b,1);
+const len=ctx.sampleRate*4,buf=ctx.createBuffer(2,len,ctx.sampleRate);
+for(let ch=0;ch<2;ch++){const d=buf.getChannelData(ch);let last=0;for(let i=0;i<len;i++){const w=Math.random()*2-1;last=(last+.02*w)/1.02;d[i]=last*3.2}}
+const src=ctx.createBufferSource();src.buffer=buf;src.loop=true;const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=900;src.connect(lp);lp.connect(ng);src.start();
+apply()}
+function setIcon(){$('ico').innerHTML=playing?'<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>':'<path d="M8 5v14l11-7z"/>';$('play').setAttribute('aria-label',playing?'Pause':'Play');$('stateRead').textContent=playing?'Playing · left '+S.c+' Hz, right '+(S.c+S.b)+' Hz':'Paused'}
+function start(){if(!ctx)build();ctx.resume();const t=ctx.currentTime;master.gain.cancelScheduledValues(t);master.gain.setValueAtTime(master.gain.value,t);master.gain.linearRampToValueAtTime(1,t+4);playing=true;endAt=S.t?Date.now()+S.t*60000:0;setIcon();clearInterval(tick);tick=setInterval(timer,1000);timer()}
+function stop(fade){if(!ctx)return;const t=ctx.currentTime;master.gain.cancelScheduledValues(t);master.gain.setValueAtTime(master.gain.value,t);master.gain.linearRampToValueAtTime(0,t+(fade||1.5));playing=false;clearInterval(tick);setIcon();$('timerRead').textContent='Tap to start · fades in gently';setTimeout(()=>{if(!playing)ctx.suspend()},(fade||1.5)*1000+200)}
+function timer(){if(!playing)return;if(!endAt){$('timerRead').textContent='Playing with no timer';return}
+const left=endAt-Date.now();if(left<=60000&&!timer.f){timer.f=1;stop(60);$('timerRead').textContent='Fading out… goodnight';return}
+const m=Math.floor(left/60000),s=Math.floor(left%60000/1000);$('timerRead').textContent='Stops in '+m+':'+String(s).padStart(2,'0')}
+$('play').addEventListener('click',()=>{try{timer.f=0;playing?stop():start()}catch(e){$('timerRead').textContent='Audio could not start in this view'}});
+$('presets').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;S.p=+b.dataset.i;S.b=P[S.p].b;S.c=P[S.p].c;ui();apply();setIcon();save()});
+$('timers').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;S.t=+b.dataset.m;timer.f=0;endAt=playing&&S.t?Date.now()+S.t*60000:0;ui();timer();save()});
+[['beat','b'],['carrier','c'],['vol','v'],['noise','n']].forEach(([id,k])=>$(id).addEventListener('input',e=>{S[k]=+e.target.value;if(k==='b'||k==='c')S.p=-1;ui();apply();if(playing)setIcon();save()}));
+ui();setIcon();
+const cv=$('pond'),g=cv.getContext('2d');const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const FONT=getComputedStyle(document.documentElement).getPropertyValue('--font');
+function draw(ts){const W=cv.clientWidth,H=cv.clientHeight,dpr=devicePixelRatio||1;if(cv.width!==W*dpr){cv.width=W*dpr;cv.height=H*dpr}
+g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);const t=(still?0:ts)/1000;
+for(let i=0;i<40;i++){const x=(i*97%W),y=(i*53%(H*.45));g.fillStyle='rgba(250,250,250,'+(.15+.2*Math.sin(t+i))+')';g.fillRect(x,y,1.5,1.5)}
+const cy=H*.42,lx=W*.18,rx=W*.82,sp=playing?1:.25;
+[[lx,'212,212,216'],[rx,'212,212,216']].forEach(([x,c],k)=>{for(let r=0;r<7;r++){const rad=((t*22*sp+r*28+k*14)%196);g.strokeStyle=`rgba(${c},${(1-rad/196)*.4})`;g.lineWidth=1;g.beginPath();g.ellipse(x,cy,rad,rad*.32,0,0,7);g.stroke()}
+g.fillStyle=`rgb(${c})`;g.beginPath();g.ellipse(x,cy,4,2,0,0,7);g.fill()});
+const br=playing?(.5+.5*Math.sin(t*2*Math.PI/6)):.3,mr=Math.min(W,H)*.1*(1+.1*br);
+const gr=g.createRadialGradient(W/2,cy-10,0,W/2,cy-10,mr*2.2);gr.addColorStop(0,`rgba(232,196,106,${.14+.12*br})`);gr.addColorStop(1,'rgba(232,196,106,0)');
+g.fillStyle=gr;g.beginPath();g.arc(W/2,cy-10,mr*2.2,0,7);g.fill();g.fillStyle='#e8c46a';g.beginPath();g.arc(W/2,cy-10,mr,0,7);g.fill();
+g.fillStyle='rgba(9,9,11,.14)';g.beginPath();g.arc(W/2-mr*.3,cy-10-mr*.2,mr*.18,0,7);g.arc(W/2+mr*.35,cy-10+mr*.3,mr*.12,0,7);g.fill();
+g.font='12px '+FONT;g.fillStyle='#a1a1aa';g.textAlign='center';g.fillText('Left ear',lx,cy+40);g.fillText('Right ear',rx,cy+40);
+requestAnimationFrame(draw)}
+requestAnimationFrame(draw);
+}
+</script>
+</body></html>
